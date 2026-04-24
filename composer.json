@@ -1,0 +1,35 @@
+{
+    "name": "spamtroll/php-sdk",
+    "description": "PHP SDK for the Spamtroll spam detection API.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["spamtroll", "spam", "anti-spam", "sdk", "api"],
+    "homepage": "https://spamtroll.io",
+    "support": {
+        "source": "https://github.com/spamtroll/php-sdk",
+        "issues": "https://github.com/spamtroll/php-sdk/issues"
+    },
+    "require": {
+        "php": ">=8.0",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5 || ^10.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Spamtroll\\Sdk\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Spamtroll\\Sdk\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
