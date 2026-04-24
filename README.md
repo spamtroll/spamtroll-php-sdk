@@ -1,5 +1,9 @@
 # Spamtroll PHP SDK
 
+[![Latest Version](https://img.shields.io/packagist/v/spamtroll/php-sdk.svg)](https://packagist.org/packages/spamtroll/php-sdk)
+[![PHP Version](https://img.shields.io/packagist/php-v/spamtroll/php-sdk.svg)](https://packagist.org/packages/spamtroll/php-sdk)
+[![License](https://img.shields.io/packagist/l/spamtroll/php-sdk.svg)](LICENSE)
+
 Zero-dependency PHP client for the [Spamtroll](https://spamtroll.io) spam
 detection API.
 

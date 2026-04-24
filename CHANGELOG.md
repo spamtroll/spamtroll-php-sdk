@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-04-24
+
+### Changed
+
+- README now shows Packagist version / PHP / license badges.
+
 ## [0.9.0] - 2026-04-24
 
 ### Added
