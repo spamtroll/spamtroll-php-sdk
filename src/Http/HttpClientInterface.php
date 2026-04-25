@@ -20,14 +20,15 @@ interface HttpClientInterface
 {
     /**
      * @param array<string, string> $headers
+     *
      * @throws ConnectionException On connection failure.
-     * @throws TimeoutException    On request timeout.
+     * @throws TimeoutException On request timeout.
      */
     public function send(
         string $method,
         string $url,
         array $headers,
         ?string $body,
-        int $timeout
+        int $timeout,
     ): HttpResponse;
 }

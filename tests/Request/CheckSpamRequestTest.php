@@ -2,34 +2,34 @@
 
 declare(strict_types=1);
 
-namespace Spamtroll\Sdk\Tests\Request;
-
-use PHPUnit\Framework\TestCase;
 use Spamtroll\Sdk\Request\CheckSpamRequest;
 
-final class CheckSpamRequestTest extends TestCase
-{
-    public function test_minimal_payload(): void
-    {
-        $request = new CheckSpamRequest('hello');
-        self::assertSame(['content' => 'hello', 'source' => 'generic'], $request->toArray());
-    }
+it('serialises a minimal payload to the canonical pair', function (): void {
+    $request = new CheckSpamRequest('hello');
 
-    public function test_full_payload(): void
-    {
-        $request = new CheckSpamRequest('hi', 'comment', '1.2.3.4', 'alice', 'a@example.com');
-        self::assertSame([
-            'content' => 'hi',
-            'source' => 'comment',
-            'ip_address' => '1.2.3.4',
-            'username' => 'alice',
-            'email' => 'a@example.com',
-        ], $request->toArray());
-    }
+    expect($request->toArray())->toBe([
+        'content' => 'hello',
+        'source' => 'generic',
+    ]);
+});
 
-    public function test_empty_optional_fields_are_omitted(): void
-    {
-        $request = new CheckSpamRequest('hi', 'forum', '', '', '');
-        self::assertSame(['content' => 'hi', 'source' => 'forum'], $request->toArray());
-    }
-}
+it('serialises a fully-populated payload', function (): void {
+    $request = new CheckSpamRequest('hi', 'comment', '1.2.3.4', 'alice', 'a@example.com');
+
+    expect($request->toArray())->toBe([
+        'content' => 'hi',
+        'source' => 'comment',
+        'ip_address' => '1.2.3.4',
+        'username' => 'alice',
+        'email' => 'a@example.com',
+    ]);
+});
+
+it('omits optional fields when they are empty strings', function (): void {
+    $request = new CheckSpamRequest('hi', 'forum', '', '', '');
+
+    expect($request->toArray())->toBe([
+        'content' => 'hi',
+        'source' => 'forum',
+    ]);
+});

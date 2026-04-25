@@ -30,7 +30,7 @@ final class ClientConfig
         int $maxRetries = self::DEFAULT_MAX_RETRIES,
         int $retryBaseDelayMs = self::DEFAULT_RETRY_BASE_DELAY_MS,
         ?string $userAgent = null,
-        float $scoreDenominator = self::DEFAULT_SCORE_DENOMINATOR
+        float $scoreDenominator = self::DEFAULT_SCORE_DENOMINATOR,
     ) {
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->timeout = max(1, $timeout);

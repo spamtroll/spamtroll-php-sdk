@@ -1,0 +1,13 @@
+parameters:
+    level: 9
+    paths:
+        - src
+    # tests/ is excluded — Pest's `it()`/`expect()`/`arch()` DSL needs a
+    # dedicated PHPStan extension to type-resolve, and Pest tests are
+    # better verified by running them. Test doubles (tests/Fake/) stay
+    # out for the same reason.
+    bootstrapFiles:
+        - vendor/autoload.php
+    treatPhpDocTypesAsCertain: false
+    reportUnmatchedIgnoredErrors: true
+    tmpDir: .phpstan-cache

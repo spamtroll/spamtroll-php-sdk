@@ -25,7 +25,7 @@ final class CheckSpamResponse extends Response
         int $httpCode,
         array $data = [],
         ?string $error = null,
-        float $scoreDenominator = ClientConfig::DEFAULT_SCORE_DENOMINATOR
+        float $scoreDenominator = ClientConfig::DEFAULT_SCORE_DENOMINATOR,
     ) {
         parent::__construct($success, $httpCode, $data, $error);
 
@@ -95,7 +95,7 @@ final class CheckSpamResponse extends Response
                 }
                 return is_scalar($s) ? (string) $s : '';
             },
-            $symbols
+            $symbols,
         ));
     }
 
@@ -119,7 +119,7 @@ final class CheckSpamResponse extends Response
         }
         return array_values(array_map(
             static fn ($c): string => is_scalar($c) ? (string) $c : '',
-            $cats
+            $cats,
         ));
     }
 

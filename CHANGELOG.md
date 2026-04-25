@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-04-25
+
+### Added
+
+- PHPStan level 9 + `phpstan-strict-rules` integration. Source code
+  is fully clean; `tests/` is excluded because Pest's `it()`/`expect()`/
+  `arch()` DSL needs a dedicated extension.
+- php-cs-fixer config (`.php-cs-fixer.php`) enforcing
+  `@PSR12 + @PSR12:risky + @PHP80Migration:risky` plus
+  `declare_strict_types`, ordered imports, single quotes, trailing
+  commas in multiline argument lists.
+- Pest 2 as the test runner; the existing 28 PHPUnit tests are
+  migrated to `it()`/`expect()` style, and a new `tests/ArchTest.php`
+  pins seven structural rules (strict types, exception hierarchy,
+  no debug helpers, etc.).
+- peck (`peckphp/peck`) spell-check with a domain dictionary in
+  `peck.json`. Runs in the CI QA job, where `aspell` is installed.
+- Documentation suite under `docs/`: `INSTALLATION.md`,
+  `USAGE.md`, `CONFIGURATION.md`, `HTTP_ADAPTERS.md`,
+  `ERROR_HANDLING.md`, `RESPONSE_SCHEMA.md`, `CONTRIBUTING.md`.
+- Composer scripts: `test`, `test:coverage`, `lint`, `lint:fix`,
+  `stan`, `peck`, `qa` (composite).
+- CI now runs a separate `qa` job on PHP 8.3 (PHPStan + cs-fixer
+  dry-run + peck) on top of the existing test matrix
+  (PHP 8.0–8.4 × composer lowest/highest).
+
+### Changed
+
+- `Spamtroll\Sdk\Exception\SpamtrollException::stringify` now uses
+  `mixed` typed parameter (PHP 8.0 `mixed` keyword) instead of the
+  untyped fallback. Internal change; no public API impact.
+- `Spamtroll\Sdk\Exception\SpamtrollException::fromResponse` swaps
+  `new static()` for `new self()` to satisfy PHPStan level 9
+  ("Unsafe usage of new static()"). Same observable behaviour.
+- `Spamtroll\Sdk\Exception\ConnectionException::fromMessage` swaps
+  `new static()` for `new self()` for the same reason.
+- `Spamtroll\Sdk\Http\CurlHttpClient::parseHeaders` now treats
+  `preg_split === false` as an empty-headers case explicitly; the old
+  `?:` short-ternary tripped strict-rules.
+- `composer.json` requires PHP 8.0+ in production but pins
+  `config.platform.php = 8.3` for development tooling. Pest 2 needs
+  8.2+ transitively, peck needs 8.3+; production runtime is unchanged.
+
 ## [0.9.1] - 2026-04-24
 
 ### Changed

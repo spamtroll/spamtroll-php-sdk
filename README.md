@@ -2,6 +2,7 @@
 
 [![Latest Version](https://img.shields.io/packagist/v/spamtroll/php-sdk.svg)](https://packagist.org/packages/spamtroll/php-sdk)
 [![PHP Version](https://img.shields.io/packagist/php-v/spamtroll/php-sdk.svg)](https://packagist.org/packages/spamtroll/php-sdk)
+[![CI](https://github.com/spamtroll/spamtroll-php-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/spamtroll/spamtroll-php-sdk/actions/workflows/ci.yml)
 [![License](https://img.shields.io/packagist/l/spamtroll/php-sdk.svg)](LICENSE)
 
 Zero-dependency PHP client for the [Spamtroll](https://spamtroll.io) spam
@@ -146,12 +147,28 @@ Non-fatal error responses — HTTP 429, other 4xx — are returned as a
 `Response` with `success === false` and an `error` message, so the caller
 can decide whether to back off or log.
 
+## Documentation
+
+- [Installation](docs/INSTALLATION.md) — requirements, Composer + manual install.
+- [Usage](docs/USAGE.md) — every Client method, request fields, examples.
+- [Configuration](docs/CONFIGURATION.md) — `ClientConfig` field-by-field, environment-specific recommendations.
+- [HTTP adapters](docs/HTTP_ADAPTERS.md) — interface contract, reference adapters for WordPress / IPS / Guzzle.
+- [Error handling](docs/ERROR_HANDLING.md) — exception hierarchy, fail-open patterns.
+- [Response schema](docs/RESPONSE_SCHEMA.md) — `CheckSpamResponse` getters, score normalisation, envelope handling.
+- [Contributing](docs/CONTRIBUTING.md) — local setup, quality gate, release checklist.
+
 ## Development
 
 ```bash
 composer install
-vendor/bin/phpunit
+composer qa            # cs-fixer + phpstan + peck + pest
+composer test          # tests only
+composer test:coverage # tests with coverage
+composer lint:fix      # auto-format
 ```
+
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full quality
+gate, including the `aspell` dependency required by `composer peck`.
 
 ## License
 

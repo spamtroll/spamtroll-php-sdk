@@ -17,15 +17,22 @@ final class FakeHttpClient implements HttpClientInterface
     /** @var array<int, array{method:string, url:string, headers:array<string,string>, body:?string, timeout:int}> */
     public array $calls = [];
 
+    /**
+     * @param array<string, string> $headers
+     */
     public function queueResponse(int $statusCode, string $body = '', array $headers = []): self
     {
         $this->queue[] = new HttpResponse($statusCode, $body, $headers);
         return $this;
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     */
     public function queueJson(int $statusCode, array $payload): self
     {
-        return $this->queueResponse($statusCode, json_encode($payload) ?: '');
+        $body = json_encode($payload);
+        return $this->queueResponse($statusCode, $body === false ? '' : $body);
     }
 
     public function queueException(Throwable $e): self
@@ -60,6 +67,9 @@ final class FakeHttpClient implements HttpClientInterface
         return count($this->calls);
     }
 
+    /**
+     * @return array{method:string, url:string, headers:array<string,string>, body:?string, timeout:int}
+     */
     public function lastCall(): array
     {
         if ($this->calls === []) {

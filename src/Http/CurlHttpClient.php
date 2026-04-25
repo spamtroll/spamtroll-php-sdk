@@ -33,7 +33,7 @@ final class CurlHttpClient implements HttpClientInterface
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
 
-        if ($headers) {
+        if ($headers !== []) {
             $headerLines = [];
             foreach ($headers as $name => $value) {
                 $headerLines[] = $name . ': ' . $value;
@@ -63,10 +63,13 @@ final class CurlHttpClient implements HttpClientInterface
         curl_close($ch);
 
         $rawString = (string) $raw;
+        // PHP 8.0+ guarantees substr returns string when offsets are valid;
+        // headerSize comes straight from curl_getinfo() so it is always
+        // within bounds (or 0 when no response body was read).
         $rawHeaders = substr($rawString, 0, $headerSize);
         $rawBody = substr($rawString, $headerSize);
 
-        return new HttpResponse($statusCode, $rawBody === false ? '' : $rawBody, self::parseHeaders($rawHeaders === false ? '' : $rawHeaders));
+        return new HttpResponse($statusCode, $rawBody, self::parseHeaders($rawHeaders));
     }
 
     /**
@@ -75,8 +78,12 @@ final class CurlHttpClient implements HttpClientInterface
     private static function parseHeaders(string $raw): array
     {
         $headers = [];
-        foreach (preg_split('/\r\n|\r|\n/', $raw) ?: [] as $line) {
-            if (strpos($line, ':') === false) {
+        $lines = preg_split('/\r\n|\r|\n/', $raw);
+        if ($lines === false) {
+            return $headers;
+        }
+        foreach ($lines as $line) {
+            if (!str_contains($line, ':')) {
                 continue;
             }
             [$name, $value] = explode(':', $line, 2);

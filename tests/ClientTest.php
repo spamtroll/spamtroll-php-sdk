@@ -2,9 +2,6 @@
 
 declare(strict_types=1);
 
-namespace Spamtroll\Sdk\Tests;
-
-use PHPUnit\Framework\TestCase;
 use Spamtroll\Sdk\Client;
 use Spamtroll\Sdk\ClientConfig;
 use Spamtroll\Sdk\Exception\AuthenticationException;
@@ -18,242 +15,217 @@ use Spamtroll\Sdk\Response\UsageResponse;
 use Spamtroll\Sdk\Tests\Fake\FakeHttpClient;
 use Spamtroll\Sdk\Version;
 
-final class ClientTest extends TestCase
-{
-    private function makeClient(FakeHttpClient $http, ?ClientConfig $config = null, string $apiKey = 'test-key'): Client
-    {
-        return new Client($apiKey, $config ?? new ClientConfig(retryBaseDelayMs: 0), $http);
-    }
+it('throws when the API key is empty', function (): void {
+    $client = new Client('', new ClientConfig(retryBaseDelayMs: 0), new FakeHttpClient());
 
-    public function test_not_configured_throws(): void
-    {
-        $client = new Client('', new ClientConfig(retryBaseDelayMs: 0), new FakeHttpClient());
+    $client->checkSpam(new CheckSpamRequest('anything'));
+})->throws(NotConfiguredException::class);
 
-        $this->expectException(NotConfiguredException::class);
-        $client->checkSpam(new CheckSpamRequest('anything'));
-    }
+it('sends checkSpam as POST with JSON body and the expected headers', function (): void {
+    $http = fakeHttp()->queueJson(200, [
+        'success' => true,
+        'data' => ['status' => 'safe', 'spam_score' => 0],
+    ]);
+    $client = makeClient($http);
 
-    public function test_checkSpam_sends_post_with_json_and_headers(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, [
-            'success' => true,
-            'data' => ['status' => 'safe', 'spam_score' => 0],
-        ]);
-        $client = $this->makeClient($http);
+    $client->checkSpam(new CheckSpamRequest('hello', 'comment', '1.2.3.4', 'bob', 'bob@example.com'));
 
-        $client->checkSpam(new CheckSpamRequest('hello', 'comment', '1.2.3.4', 'bob', 'bob@example.com'));
+    $call = $http->lastCall();
 
-        $call = $http->lastCall();
-        self::assertSame('POST', $call['method']);
-        self::assertSame('https://api.spamtroll.io/api/v1/scan/check', $call['url']);
-        self::assertSame('test-key', $call['headers']['X-API-Key']);
-        self::assertSame('application/json', $call['headers']['Content-Type']);
-        self::assertSame('application/json', $call['headers']['Accept']);
-        self::assertSame('spamtroll-php-sdk/' . Version::VERSION, $call['headers']['User-Agent']);
+    expect($call['method'])->toBe('POST')
+        ->and($call['url'])->toBe('https://api.spamtroll.io/api/v1/scan/check')
+        ->and($call['headers']['X-API-Key'])->toBe('test-key')
+        ->and($call['headers']['Content-Type'])->toBe('application/json')
+        ->and($call['headers']['Accept'])->toBe('application/json')
+        ->and($call['headers']['User-Agent'])->toBe('spamtroll-php-sdk/' . Version::VERSION);
 
-        self::assertIsString($call['body']);
-        self::assertSame([
-            'content' => 'hello',
-            'source' => 'comment',
-            'ip_address' => '1.2.3.4',
-            'username' => 'bob',
-            'email' => 'bob@example.com',
-        ], json_decode($call['body'], true));
-    }
+    expect($call['body'])->toBeString();
+    expect(json_decode((string) $call['body'], true))->toBe([
+        'content' => 'hello',
+        'source' => 'comment',
+        'ip_address' => '1.2.3.4',
+        'username' => 'bob',
+        'email' => 'bob@example.com',
+    ]);
+});
 
-    public function test_checkSpam_returns_success_response_with_normalized_score(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, [
-            'success' => true,
-            'data' => ['status' => 'blocked', 'spam_score' => 15, 'submission_id' => 'abc-123'],
-        ]);
-        $client = $this->makeClient($http);
+it('returns a CheckSpamResponse with normalised score on success', function (): void {
+    $http = fakeHttp()->queueJson(200, [
+        'success' => true,
+        'data' => ['status' => 'blocked', 'spam_score' => 15, 'submission_id' => 'abc-123'],
+    ]);
+    $client = makeClient($http);
 
-        $response = $client->checkSpam(new CheckSpamRequest('spam'));
+    $response = $client->checkSpam(new CheckSpamRequest('spam'));
 
-        self::assertInstanceOf(CheckSpamResponse::class, $response);
-        self::assertTrue($response->success);
-        self::assertSame(200, $response->httpCode);
-        self::assertSame(CheckSpamResponse::STATUS_BLOCKED, $response->getStatus());
-        self::assertSame(0.5, $response->getSpamScore());
-        self::assertSame(15.0, $response->getRawSpamScore());
-        self::assertSame('abc-123', $response->getSubmissionId());
-        self::assertTrue($response->isSpam());
-    }
+    expect($response)->toBeInstanceOf(CheckSpamResponse::class)
+        ->and($response->success)->toBeTrue()
+        ->and($response->httpCode)->toBe(200)
+        ->and($response->getStatus())->toBe(CheckSpamResponse::STATUS_BLOCKED)
+        ->and($response->getSpamScore())->toBe(0.5)
+        ->and($response->getRawSpamScore())->toBe(15.0)
+        ->and($response->getSubmissionId())->toBe('abc-123')
+        ->and($response->isSpam())->toBeTrue();
+});
 
-    public function test_401_throws_authentication(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(401, ['error' => 'bad key']);
-        $client = $this->makeClient($http);
+it('throws AuthenticationException on HTTP 401', function (): void {
+    $http = fakeHttp()->queueJson(401, ['error' => 'bad key']);
+    $client = makeClient($http);
 
-        $this->expectException(AuthenticationException::class);
+    $client->checkSpam(new CheckSpamRequest('x'));
+})->throws(AuthenticationException::class);
+
+it('returns a Response with success=false on 429 without retrying', function (): void {
+    $http = fakeHttp()
+        ->queueJson(429, ['error' => 'rate limited'])
+        ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
+    $client = makeClient($http);
+
+    $response = $client->checkSpam(new CheckSpamRequest('x'));
+
+    expect($response->success)->toBeFalse()
+        ->and($response->httpCode)->toBe(429)
+        ->and($response->error)->toBe('rate limited')
+        ->and($http->callCount())->toBe(1);
+});
+
+it('returns a Response with success=false on other 4xx without retrying', function (): void {
+    $http = fakeHttp()->queueJson(400, ['error' => 'bad request']);
+    $client = makeClient($http);
+
+    $response = $client->checkSpam(new CheckSpamRequest('x'));
+
+    expect($response->success)->toBeFalse()
+        ->and($response->httpCode)->toBe(400)
+        ->and($response->error)->toBe('bad request')
+        ->and($http->callCount())->toBe(1);
+});
+
+it('retries 5xx responses up to maxRetries before throwing ServerException', function (): void {
+    $http = fakeHttp()
+        ->queueJson(500, ['error' => 'boom'])
+        ->queueJson(502, ['error' => 'bad gateway'])
+        ->queueJson(503, ['error' => 'unavailable']);
+    $client = makeClient($http);
+
+    try {
         $client->checkSpam(new CheckSpamRequest('x'));
+        test()->fail('Expected ServerException');
+    } catch (ServerException $e) {
+        expect($e->httpCode)->toBe(503)
+            ->and($http->callCount())->toBe(3);
     }
+});
 
-    public function test_429_returns_unsuccessful_response_without_retry(): void
-    {
-        $http = (new FakeHttpClient())
-            ->queueJson(429, ['error' => 'rate limited'])
-            ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
-        $client = $this->makeClient($http);
+it('recovers when an early 5xx is followed by a successful response', function (): void {
+    $http = fakeHttp()
+        ->queueJson(500, ['error' => 'transient'])
+        ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe', 'spam_score' => 0]]);
+    $client = makeClient($http);
 
-        $response = $client->checkSpam(new CheckSpamRequest('x'));
+    $response = $client->checkSpam(new CheckSpamRequest('x'));
 
-        self::assertFalse($response->success);
-        self::assertSame(429, $response->httpCode);
-        self::assertSame('rate limited', $response->error);
-        self::assertSame(1, $http->callCount(), '429 must not retry');
-    }
+    expect($response->success)->toBeTrue()
+        ->and($http->callCount())->toBe(2);
+});
 
-    public function test_other_4xx_returns_response_without_retry(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(400, ['error' => 'bad request']);
-        $client = $this->makeClient($http);
+it('retries on connection failures and recovers on success', function (): void {
+    $http = fakeHttp()
+        ->queueException(ConnectionException::fromMessage('dns fail'))
+        ->queueException(TimeoutException::afterSeconds(5))
+        ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
+    $client = makeClient($http);
 
-        $response = $client->checkSpam(new CheckSpamRequest('x'));
+    $response = $client->checkSpam(new CheckSpamRequest('x'));
 
-        self::assertFalse($response->success);
-        self::assertSame(400, $response->httpCode);
-        self::assertSame('bad request', $response->error);
-        self::assertSame(1, $http->callCount());
-    }
+    expect($response->success)->toBeTrue()
+        ->and($http->callCount())->toBe(3);
+});
 
-    public function test_5xx_retries_then_throws_server_exception(): void
-    {
-        $http = (new FakeHttpClient())
-            ->queueJson(500, ['error' => 'boom'])
-            ->queueJson(502, ['error' => 'bad gateway'])
-            ->queueJson(503, ['error' => 'unavailable']);
-        $client = $this->makeClient($http);
+it('rethrows the final connection exception after exhausting retries', function (): void {
+    $http = fakeHttp()
+        ->queueException(ConnectionException::fromMessage('fail 1'))
+        ->queueException(ConnectionException::fromMessage('fail 2'))
+        ->queueException(TimeoutException::afterSeconds(5));
+    $client = makeClient($http);
 
-        try {
-            $client->checkSpam(new CheckSpamRequest('x'));
-            self::fail('Expected ServerException');
-        } catch (ServerException $e) {
-            self::assertSame(503, $e->httpCode);
-            self::assertSame(3, $http->callCount());
-        }
-    }
+    $client->checkSpam(new CheckSpamRequest('x'));
+})->throws(TimeoutException::class);
 
-    public function test_5xx_then_success_recovers(): void
-    {
-        $http = (new FakeHttpClient())
-            ->queueJson(500, ['error' => 'transient'])
-            ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe', 'spam_score' => 0]]);
-        $client = $this->makeClient($http);
+it('hits /scan/status with a GET when testConnection is invoked', function (): void {
+    $http = fakeHttp()->queueJson(200, ['success' => true, 'status' => 'ok']);
+    $client = makeClient($http);
 
-        $response = $client->checkSpam(new CheckSpamRequest('x'));
+    $response = $client->testConnection();
 
-        self::assertTrue($response->success);
-        self::assertSame(2, $http->callCount());
-    }
+    expect($response->isConnectionValid())->toBeTrue()
+        ->and($http->lastCall()['method'])->toBe('GET')
+        ->and($http->lastCall()['url'])->toBe('https://api.spamtroll.io/api/v1/scan/status')
+        ->and($http->lastCall()['body'])->toBeNull();
+});
 
-    public function test_connection_exception_retries(): void
-    {
-        $http = (new FakeHttpClient())
-            ->queueException(ConnectionException::fromMessage('dns fail'))
-            ->queueException(TimeoutException::afterSeconds(5))
-            ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
-        $client = $this->makeClient($http);
+it('parses usage fields from getAccountUsage', function (): void {
+    $http = fakeHttp()->queueJson(200, [
+        'success' => true,
+        'data' => [
+            'requests_today' => 12,
+            'requests_limit' => 1000,
+            'requests_remaining' => 988,
+        ],
+    ]);
+    $client = makeClient($http);
 
-        $response = $client->checkSpam(new CheckSpamRequest('x'));
+    $response = $client->getAccountUsage();
 
-        self::assertTrue($response->success);
-        self::assertSame(3, $http->callCount());
-    }
+    expect($response)->toBeInstanceOf(UsageResponse::class)
+        ->and($response->getRequestsToday())->toBe(12)
+        ->and($response->getRequestsLimit())->toBe(1000)
+        ->and($response->getRequestsRemaining())->toBe(988);
+});
 
-    public function test_connection_exception_after_retries_rethrows(): void
-    {
-        $http = (new FakeHttpClient())
-            ->queueException(ConnectionException::fromMessage('fail 1'))
-            ->queueException(ConnectionException::fromMessage('fail 2'))
-            ->queueException(TimeoutException::afterSeconds(5));
-        $client = $this->makeClient($http);
+it('uses a custom user agent when configured', function (): void {
+    $http = fakeHttp()->queueJson(200, ['success' => true, 'data' => []]);
+    $client = makeClient($http, new ClientConfig(userAgent: 'my-plugin/2.3.4', retryBaseDelayMs: 0));
 
-        $this->expectException(TimeoutException::class);
-        $client->checkSpam(new CheckSpamRequest('x'));
-    }
+    $client->checkSpam(new CheckSpamRequest('x'));
 
-    public function test_testConnection_uses_get_status_endpoint(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, ['success' => true, 'status' => 'ok']);
-        $client = $this->makeClient($http);
+    expect($http->lastCall()['headers']['User-Agent'])->toBe('my-plugin/2.3.4');
+});
 
-        $response = $client->testConnection();
+it('respects a custom base URL', function (): void {
+    $http = fakeHttp()->queueJson(200, ['success' => true, 'data' => []]);
+    $client = makeClient(
+        $http,
+        new ClientConfig(baseUrl: 'https://staging.spamtroll.io/api/v1/', retryBaseDelayMs: 0),
+    );
 
-        self::assertTrue($response->isConnectionValid());
-        self::assertSame('GET', $http->lastCall()['method']);
-        self::assertSame('https://api.spamtroll.io/api/v1/scan/status', $http->lastCall()['url']);
-        self::assertNull($http->lastCall()['body']);
-    }
+    $client->checkSpam(new CheckSpamRequest('x'));
 
-    public function test_getAccountUsage_parses_usage_fields(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, [
-            'success' => true,
-            'data' => [
-                'requests_today' => 12,
-                'requests_limit' => 1000,
-                'requests_remaining' => 988,
-            ],
-        ]);
-        $client = $this->makeClient($http);
+    expect($http->lastCall()['url'])->toBe('https://staging.spamtroll.io/api/v1/scan/check');
+});
 
-        $response = $client->getAccountUsage();
+it('applies a custom score denominator to the response', function (): void {
+    $http = fakeHttp()->queueJson(200, [
+        'success' => true,
+        'data' => ['status' => 'blocked', 'spam_score' => 15],
+    ]);
+    $client = makeClient($http, new ClientConfig(scoreDenominator: 15.0, retryBaseDelayMs: 0));
 
-        self::assertInstanceOf(UsageResponse::class, $response);
-        self::assertSame(12, $response->getRequestsToday());
-        self::assertSame(1000, $response->getRequestsLimit());
-        self::assertSame(988, $response->getRequestsRemaining());
-    }
+    $response = $client->checkSpam(new CheckSpamRequest('x'));
 
-    public function test_custom_user_agent_overrides_default(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, ['success' => true, 'data' => []]);
-        $config = new ClientConfig(userAgent: 'my-plugin/2.3.4', retryBaseDelayMs: 0);
-        $client = $this->makeClient($http, $config);
+    expect($response->getSpamScore())->toBe(1.0);
+});
 
-        $client->checkSpam(new CheckSpamRequest('x'));
+it('omits optional fields from the JSON payload when not provided', function (): void {
+    $http = fakeHttp()->queueJson(200, ['success' => true, 'data' => []]);
+    $client = makeClient($http);
 
-        self::assertSame('my-plugin/2.3.4', $http->lastCall()['headers']['User-Agent']);
-    }
+    $client->checkSpam(new CheckSpamRequest('only content'));
 
-    public function test_custom_base_url_is_respected(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, ['success' => true, 'data' => []]);
-        $config = new ClientConfig(baseUrl: 'https://staging.spamtroll.io/api/v1/', retryBaseDelayMs: 0);
-        $client = $this->makeClient($http, $config);
-
-        $client->checkSpam(new CheckSpamRequest('x'));
-
-        self::assertSame(
-            'https://staging.spamtroll.io/api/v1/scan/check',
-            $http->lastCall()['url']
-        );
-    }
-
-    public function test_custom_score_denominator_is_applied(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, [
-            'success' => true,
-            'data' => ['status' => 'blocked', 'spam_score' => 15],
-        ]);
-        $config = new ClientConfig(scoreDenominator: 15.0, retryBaseDelayMs: 0);
-        $client = $this->makeClient($http, $config);
-
-        $response = $client->checkSpam(new CheckSpamRequest('x'));
-
-        self::assertSame(1.0, $response->getSpamScore());
-    }
-
-    public function test_optional_fields_omitted_from_payload(): void
-    {
-        $http = (new FakeHttpClient())->queueJson(200, ['success' => true, 'data' => []]);
-        $client = $this->makeClient($http);
-
-        $client->checkSpam(new CheckSpamRequest('only content'));
-
-        $body = json_decode($http->lastCall()['body'], true);
-        self::assertSame(['content' => 'only content', 'source' => 'generic'], $body);
-    }
-}
+    $body = $http->lastCall()['body'];
+    expect($body)->toBeString();
+    expect(json_decode((string) $body, true))->toBe([
+        'content' => 'only content',
+        'source' => 'generic',
+    ]);
+});

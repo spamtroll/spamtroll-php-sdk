@@ -13,14 +13,18 @@ class SpamtrollException extends RuntimeException
 
     public ?string $apiErrorCode;
 
+    /** @var array<string, mixed>|null */
     public ?array $responseData;
 
+    /**
+     * @param array<string, mixed>|null $responseData
+     */
     public function __construct(
         string $message,
         int $httpCode = 0,
         ?string $apiErrorCode = null,
         ?array $responseData = null,
-        ?Throwable $previous = null
+        ?Throwable $previous = null,
     ) {
         parent::__construct($message, $httpCode, $previous);
 
@@ -29,6 +33,9 @@ class SpamtrollException extends RuntimeException
         $this->responseData = $responseData;
     }
 
+    /**
+     * @param array<string, mixed>|null $data
+     */
     public static function fromResponse(int $httpCode, ?array $data = null): self
     {
         $message = 'Unknown API error';
@@ -45,10 +52,10 @@ class SpamtrollException extends RuntimeException
             }
         }
 
-        return new static($message, $httpCode, $apiErrorCode, $data);
+        return new self($message, $httpCode, $apiErrorCode, $data);
     }
 
-    private static function stringify($value): string
+    private static function stringify(mixed $value): string
     {
         if (is_scalar($value)) {
             return (string) $value;

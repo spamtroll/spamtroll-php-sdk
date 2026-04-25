@@ -8,6 +8,6 @@ class ConnectionException extends SpamtrollException
 {
     public static function fromMessage(string $error): self
     {
-        return new static('Connection failed: ' . $error, 0);
+        return new self('Connection failed: ' . $error, 0);
     }
 }

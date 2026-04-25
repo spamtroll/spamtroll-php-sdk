@@ -40,8 +40,9 @@ final class UsageResponse extends Response
         if (isset($this->data[$key]) && is_numeric($this->data[$key])) {
             return (int) $this->data[$key];
         }
-        if (isset($this->data['data'][$key]) && is_numeric($this->data['data'][$key])) {
-            return (int) $this->data['data'][$key];
+        $nested = $this->data['data'] ?? null;
+        if (is_array($nested) && isset($nested[$key]) && is_numeric($nested[$key])) {
+            return (int) $nested[$key];
         }
         return 0;
     }

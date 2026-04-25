@@ -27,7 +27,7 @@ final class Client
     public function __construct(
         string $apiKey,
         ?ClientConfig $config = null,
-        ?HttpClientInterface $http = null
+        ?HttpClientInterface $http = null,
     ) {
         $this->apiKey = $apiKey;
         $this->config = $config ?? new ClientConfig();
@@ -73,7 +73,9 @@ final class Client
 
     /**
      * @param array<string, mixed>|null $data
+     *
      * @return array{0: bool, 1: int, 2: array<string, mixed>, 3: ?string}
+     *
      * @throws SpamtrollException
      */
     private function dispatch(string $method, string $endpoint, ?array $data): array

@@ -27,7 +27,7 @@ final class CheckSpamRequest
         string $source = self::SOURCE_GENERIC,
         ?string $ipAddress = null,
         ?string $username = null,
-        ?string $email = null
+        ?string $email = null,
     ) {
         $this->content = $content;
         $this->source = $source;

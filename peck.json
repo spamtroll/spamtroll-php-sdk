@@ -1,0 +1,38 @@
+{
+    "preset": "base",
+    "ignore": {
+        "words": [
+            "php",
+            "spamtroll",
+            "submission",
+            "denominator",
+            "throwable",
+            "retryable",
+            "exponential",
+            "backoff",
+            "envelope",
+            "unwrap",
+            "unwraps",
+            "psr",
+            "phpstan",
+            "phpdoc",
+            "rethrows",
+            "stringly",
+            "preprocessor",
+            "deserialise",
+            "serialise",
+            "serialises",
+            "narrowing",
+            "fakehttpclient",
+            "ipshttpclient",
+            "checkspamrequest",
+            "checkspamresponse",
+            "ext",
+            "curl"
+        ],
+        "paths": [
+            "vendor",
+            ".phpstan-cache"
+        ]
+    }
+}
