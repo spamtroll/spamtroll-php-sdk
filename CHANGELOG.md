@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-04-26
+
 ### Added
 - `CheckSpamResponse::isQuotaExceeded()`, `wasSkipped()`, `getSkipReason()`, `getQuotaUsage()` for the new HTTP **402 QUOTA_EXCEEDED** response. Plugins on free / capped plans can now distinguish "user ran out of daily scans" from real transport errors and **fail open** (let the message through unscanned) instead of blocking legitimate content because billing ran out. The error envelope `{code, message, usage:{current,limit,plan,reset_at}}` is preserved so plugins can render a "you've used 200/200 today — upgrade" hint in their admin UI.
 - `CheckSpamResponse::ERROR_QUOTA_EXCEEDED` constant for plugins that want to switch on the code directly.
