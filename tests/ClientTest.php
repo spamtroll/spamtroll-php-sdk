@@ -75,6 +75,41 @@ it('throws AuthenticationException on HTTP 401', function (): void {
     $client->checkSpam(new CheckSpamRequest('x'));
 })->throws(AuthenticationException::class);
 
+it('returns a CheckSpamResponse with isQuotaExceeded=true on 402 QUOTA_EXCEEDED', function (): void {
+    // Backend's 402 envelope: {success:false, error:{code, message, usage}}.
+    // Plugins read isQuotaExceeded() before deciding whether !success means
+    // "treat as ham" (fail-open) versus a real transport error.
+    $http = fakeHttp()->queueJson(402, [
+        'success' => false,
+        'error' => [
+            'code' => 'QUOTA_EXCEEDED',
+            'message' => 'Daily scan limit reached. Upgrade your plan at /dashboard/billing.',
+            'usage' => [
+                'current' => 200,
+                'limit' => 200,
+                'plan' => 'free',
+                'reset_at' => '2026-04-27T00:00:00Z',
+            ],
+        ],
+    ]);
+    $client = makeClient($http);
+
+    $response = $client->checkSpam(new CheckSpamRequest('hello'));
+
+    expect($response->success)->toBeFalse()
+        ->and($response->httpCode)->toBe(402)
+        ->and($response->isQuotaExceeded())->toBeTrue()
+        ->and($response->wasSkipped())->toBeTrue()
+        ->and($response->getSkipReason())->toBe('quota_exceeded')
+        ->and($response->isSpam())->toBeFalse() // fail-open: not spam even though success=false
+        ->and($response->getQuotaUsage())->toMatchArray([
+            'current' => 200,
+            'limit' => 200,
+            'plan' => 'free',
+        ])
+        ->and($http->callCount())->toBe(1);
+});
+
 it('returns a Response with success=false on 429 without retrying', function (): void {
     $http = fakeHttp()
         ->queueJson(429, ['error' => 'rate limited'])

@@ -132,6 +132,16 @@ final class Client
 
             $errorMessage = $this->extractError($decoded);
 
+            // 402 Payment Required = QUOTA_EXCEEDED. The SDK does NOT throw
+            // here — quota exhaustion is a normal operational state for
+            // free-tier integrations. Plugins inspect CheckSpamResponse
+            // ::isQuotaExceeded() and fail open (treat the message as ham,
+            // log locally for the plugin's own dashboard) rather than
+            // blocking legitimate content because billing ran out.
+            if ($http->statusCode === 402) {
+                return [false, $http->statusCode, $decoded, $errorMessage];
+            }
+
             if ($http->statusCode === 429) {
                 return [false, $http->statusCode, $decoded, $errorMessage];
             }

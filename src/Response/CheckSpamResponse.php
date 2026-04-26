@@ -12,8 +12,17 @@ final class CheckSpamResponse extends Response
     public const STATUS_SUSPICIOUS = 'suspicious';
     public const STATUS_SAFE = 'safe';
 
+    /** Backend error code returned with HTTP 402 when the user's daily
+     *  scan quota is exhausted. Plugins should treat this as "let the
+     *  message through unscanned" — see isQuotaExceeded() / wasSkipped().
+     */
+    public const ERROR_QUOTA_EXCEEDED = 'QUOTA_EXCEEDED';
+
     /** @var array<string, mixed> */
     protected array $scanData;
+
+    /** @var array<string, mixed> */
+    protected array $errorData;
 
     protected float $scoreDenominator;
 
@@ -39,11 +48,75 @@ final class CheckSpamResponse extends Response
         } else {
             $this->scanData = isset($data['data']) && is_array($data['data']) ? $data['data'] : $data;
         }
+
+        // Capture the error envelope separately so isQuotaExceeded() and
+        // getQuotaUsage() can read code + usage even when scanData is empty
+        // (which it is on a 402 response).
+        $this->errorData = isset($data['error']) && is_array($data['error']) ? $data['error'] : [];
     }
 
     public function isSpam(): bool
     {
+        // A quota-exceeded response is NOT spam — even though success=false,
+        // the plugin should let the message through (fail-open contract).
+        if ($this->wasSkipped()) {
+            return false;
+        }
         return $this->success && $this->getStatus() === self::STATUS_BLOCKED;
+    }
+
+    /**
+     * True when the backend rejected the scan because the user's daily
+     * quota was exhausted (HTTP 402, error.code = QUOTA_EXCEEDED).
+     * Plugins MUST check this before treating !success as a transport
+     * error — quota exhaustion is a normal operational state, not an
+     * error to retry.
+     */
+    public function isQuotaExceeded(): bool
+    {
+        if ($this->httpCode !== 402) {
+            return false;
+        }
+        $code = $this->errorData['code'] ?? null;
+        return is_string($code) && $code === self::ERROR_QUOTA_EXCEEDED;
+    }
+
+    /**
+     * True when the SDK could not produce a verdict and the plugin
+     * should fail open (allow the content through unscanned). Today
+     * this is just a synonym for isQuotaExceeded(); future SDK
+     * versions may extend it (e.g. a "PLAN_DOWNGRADED" code).
+     */
+    public function wasSkipped(): bool
+    {
+        return $this->isQuotaExceeded();
+    }
+
+    /**
+     * Machine-readable reason wasSkipped() is true. Empty string when
+     * !wasSkipped(). Plugins can log this verbatim into their local
+     * "skipped scans" table.
+     */
+    public function getSkipReason(): string
+    {
+        if ($this->isQuotaExceeded()) {
+            return 'quota_exceeded';
+        }
+        return '';
+    }
+
+    /**
+     * Returns the {current, limit, plan, reset_at} block from a 402
+     * response so plugins can render a "you've used 200/200 today" hint
+     * in their admin UI. All keys are optional — the backend is the
+     * source of truth and may extend this in the future.
+     *
+     * @return array<string, mixed>
+     */
+    public function getQuotaUsage(): array
+    {
+        $usage = $this->errorData['usage'] ?? null;
+        return is_array($usage) ? $usage : [];
     }
 
     public function getStatus(): string
