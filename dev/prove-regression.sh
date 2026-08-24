@@ -32,6 +32,7 @@ echo
 # the override autoloader serves, so it says nothing about the old sources.
 SPAMTROLL_SRC_DIR="${OUT}/src" vendor/bin/pest \
   tests/FailOpenContractTest.php \
+  tests/FeedbackTest.php \
   tests/ClientTest.php \
   tests/ClientConfigTest.php \
   tests/Request \
