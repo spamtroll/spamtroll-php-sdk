@@ -45,20 +45,43 @@ into a block.
 
 ## Skip categories — switch on these
 
-`getSkipCategory()` returns one of **five** values, and the set is closed.
-Every skipped response maps to exactly one, and a backend error code that
-did not exist when your plugin shipped lands in an existing bucket rather
-than inventing a sixth. Use it for control flow and for anything you
-persist.
+`getSkipCategory()` returns one of **seven** values (plus the empty string
+when a verdict was reached), and the set is closed. Every skipped response
+maps to exactly one, and a backend error code that did not exist when your
+plugin shipped lands in an existing bucket rather than inventing an
+eighth. Use it for control flow and for anything you persist.
+
+The axis is cut by *what you should do about it*. Each row selects a
+different action; no two select the same one. That is the test a category
+has to pass to exist.
 
 | Category | Constant | When | What a plugin should do |
 |---|---|---|---|
-| `transport` | `SKIP_CATEGORY_TRANSPORT` | No answer at all: missing key, DNS, timeout, 401, 5xx after retries, an adapter that threw | Fail open, log, and trip your circuit breaker if you have one |
+| `not_configured` | `SKIP_CATEGORY_NOT_CONFIGURED` | No API key; an unusable base URL | Nothing. Do not warn, do not count it against a circuit breaker — the site simply is not set up yet |
+| `auth` | `SKIP_CATEGORY_AUTH` | HTTP 401 (key rejected), 403 (account blocked, platform disabled) | Stop calling immediately and tell the **site owner**, pointing at the key or the dashboard. Permanent until a human acts, so retrying is waste |
 | `quota` | `SKIP_CATEGORY_QUOTA` | HTTP 402 — the account is out of scans | Fail open and tell the admin; `getQuotaUsage()` has the numbers |
 | `rate_limit` | `SKIP_CATEGORY_RATE_LIMIT` | HTTP 429 | Fail open and back off |
-| `rejected` | `SKIP_CATEGORY_REJECTED` | Any other 4xx — the backend refused the request | Fail open and log; this one usually means a bug in the caller |
+| `rejected` | `SKIP_CATEGORY_REJECTED` | Any other 4xx: 400, 404, 422 | Fail open, log for the **developer**. This normally means the caller sent something wrong — it is not an admin's problem |
+| `transport` | `SKIP_CATEGORY_TRANSPORT` | No answer at all: DNS, timeout, refused, 5xx after retries, an adapter that threw | Fail open, log, count it against your circuit breaker if you have one |
 | `no_verdict` | `SKIP_CATEGORY_NO_VERDICT` | HTTP 2xx with no classification in the body | Fail open and log; suspect a proxy or captive portal |
-| `''` | `SKIP_CATEGORY_NONE` | A verdict was reached | Act on `shouldBlock()` / `shouldModerate()` |
+| — | `SKIP_CATEGORY_NONE` (`''`) | A verdict was reached | Act on `shouldBlock()` / `shouldModerate()` |
+
+Note what is deliberately **not** grouped together:
+
+- **`not_configured` is not `transport`.** A fresh install with no key is
+  not an outage. Sharing a bucket means a circuit breaker opens against a
+  key that does not exist and every unconfigured site shows "cannot reach
+  the API".
+- **`auth` is not `transport`.** A 401 is not the absence of an answer; it
+  is a very specific answer that will not change until someone edits the
+  key. Sending that admin to their hosting provider is the wrong outcome.
+- **`auth` is not `rejected`.** 403 (account blocked) is fixed by the site
+  owner in the dashboard; 422 is fixed by the plugin's developer in code.
+  Different person, different urgency, different channel.
+
+Categories are keyed on the SDK's exception hierarchy and the HTTP status,
+never on whether a call happened to throw — that is an internal detail of
+`Client::dispatch()` and it is not something a plugin should inherit.
 
 ## Skip reasons — log these
 

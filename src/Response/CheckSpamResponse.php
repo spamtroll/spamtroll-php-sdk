@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Spamtroll\Sdk\Response;
 
 use Spamtroll\Sdk\ClientConfig;
+use Spamtroll\Sdk\Exception\AuthenticationException;
+use Spamtroll\Sdk\Exception\InvalidConfigurationException;
+use Spamtroll\Sdk\Exception\NotConfiguredException;
 use Spamtroll\Sdk\Exception\SpamtrollException;
 use Spamtroll\Sdk\Internal\ErrorEnvelope;
 use Throwable;
@@ -41,9 +44,14 @@ final class CheckSpamResponse extends Response
      * getSkipReason() is deliberately open — it carries the backend's own
      * error code, and the backend may add codes at any time. That makes it
      * right for a log line and wrong for a switch statement or a narrow
-     * database column. These five categories are exhaustive and stable:
-     * every skipped response maps to exactly one, and new backend codes land
-     * in an existing bucket rather than inventing a sixth.
+     * database column. These categories are exhaustive and stable: every
+     * skipped response maps to exactly one, and new backend codes land in an
+     * existing bucket rather than inventing another category.
+     *
+     * The axis is cut by *what the caller should do*, not by how the failure
+     * happened to reach this class. Each value below selects a different
+     * action, and no two of them select the same one — that is the whole
+     * test of whether a category earns its place.
      *
      * Switch on the category, log the reason.
      */
@@ -51,8 +59,28 @@ final class CheckSpamResponse extends Response
     /** Has a verdict; nothing was skipped. */
     public const SKIP_CATEGORY_NONE = '';
 
-    /** The call never produced an answer: no key, DNS, timeout, 401, 5xx. */
-    public const SKIP_CATEGORY_TRANSPORT = 'transport';
+    /**
+     * The site is not set up: no API key, or a base URL that cannot be used.
+     *
+     * Distinct from `transport` because there is nothing to retry, nothing to
+     * report and nothing wrong. Counting this against a circuit breaker opens
+     * it against a key that does not exist, and warning an admin that the API
+     * is unreachable sends them to their host over a field they simply have
+     * not filled in yet.
+     */
+    public const SKIP_CATEGORY_NOT_CONFIGURED = 'not_configured';
+
+    /**
+     * The backend knows who is calling and refuses: HTTP 401 (key rejected)
+     * or 403 (account blocked, platform disabled).
+     *
+     * Distinct from `transport` because the server answered, and answered
+     * decisively: this is permanent until a human acts. Retrying it wastes
+     * round-trips, and "cannot reach the API" is the wrong thing to tell an
+     * admin whose key was revoked. Distinct from `rejected` because the
+     * person who fixes it is the site owner, not the plugin's developer.
+     */
+    public const SKIP_CATEGORY_AUTH = 'auth';
 
     /** The account is out of scans (HTTP 402). Actionable by the site owner. */
     public const SKIP_CATEGORY_QUOTA = 'quota';
@@ -60,8 +88,15 @@ final class CheckSpamResponse extends Response
     /** Too many requests (HTTP 429). Back off and try later. */
     public const SKIP_CATEGORY_RATE_LIMIT = 'rate_limit';
 
-    /** The backend refused the request itself (any other 4xx). */
+    /**
+     * The backend refused the request itself: 400, 404, 422 and friends.
+     * Almost always a bug in the caller, so it belongs in a developer log
+     * rather than in an admin notice.
+     */
     public const SKIP_CATEGORY_REJECTED = 'rejected';
+
+    /** No answer at all: DNS, timeout, refused, 5xx after retries. */
+    public const SKIP_CATEGORY_TRANSPORT = 'transport';
 
     /** A 2xx that carried no classification — HTML, empty body, a proxy. */
     public const SKIP_CATEGORY_NO_VERDICT = 'no_verdict';
@@ -232,7 +267,17 @@ final class CheckSpamResponse extends Response
         }
 
         if ($this->failure !== null) {
-            return self::SKIP_TRANSPORT_ERROR;
+            // The SDK's own failures carry a code (NOT_CONFIGURED,
+            // INVALID_API_KEY, INVALID_CONFIGURATION), and so does a 5xx that
+            // exhausted its retries. Prefer it: "transport_error" for a
+            // rejected key is a log line that sends someone to the wrong
+            // place. Falls back for DNS, timeouts and refused connections,
+            // which genuinely have nothing more specific to say.
+            $failureCode = $this->getErrorCode();
+
+            return $failureCode === null || $failureCode === ''
+                ? self::SKIP_TRANSPORT_ERROR
+                : strtolower($failureCode);
         }
 
         $code = $this->getErrorCode();
@@ -267,24 +312,40 @@ final class CheckSpamResponse extends Response
             return self::SKIP_CATEGORY_NONE;
         }
 
+        // A throwing failure is classified by *which* exception it is, not by
+        // the fact that it threw. Whether dispatch() throws is an internal
+        // detail; the exception hierarchy is the documented taxonomy, and it
+        // already separates "not set up" and "refused" from "no answer".
         if ($this->failure !== null) {
+            if ($this->failure instanceof NotConfiguredException
+                || $this->failure instanceof InvalidConfigurationException) {
+                return self::SKIP_CATEGORY_NOT_CONFIGURED;
+            }
+            if ($this->failure instanceof AuthenticationException) {
+                return self::SKIP_CATEGORY_AUTH;
+            }
+
             return self::SKIP_CATEGORY_TRANSPORT;
         }
 
         if ($this->httpCode === 402) {
             return self::SKIP_CATEGORY_QUOTA;
         }
-
         if ($this->httpCode === 429) {
             return self::SKIP_CATEGORY_RATE_LIMIT;
         }
-
+        // 401 always arrives as an AuthenticationException, handled above; it
+        // is listed here so a response built directly from a 401 body — which
+        // plugin test suites do — lands in the same place.
+        if ($this->httpCode === 401 || $this->httpCode === 403) {
+            return self::SKIP_CATEGORY_AUTH;
+        }
         if ($this->httpCode >= 400 && $this->httpCode < 500) {
             return self::SKIP_CATEGORY_REJECTED;
         }
 
-        // A 5xx or a 401 only reaches here as a $failure, handled above, so
-        // what is left is a 2xx whose body carried no classification.
+        // 5xx only reaches here as a $failure, so what is left is a 2xx whose
+        // body carried no classification.
         return self::SKIP_CATEGORY_NO_VERDICT;
     }
 

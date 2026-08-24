@@ -29,10 +29,13 @@ the constraint in a plugin.
   four plugins had been re-deriving a verdict from the normalised score
   with their own hard-coded cut-offs because `status` was awkward to
   reach.
-- `CheckSpamResponse::getSkipCategory()` — a **closed** set of five values
-  (`transport`, `quota`, `rate_limit`, `rejected`, `no_verdict`, plus the
-  empty string when there is a verdict) sitting alongside the deliberately
-  open `getSkipReason()`. The reason string carries the backend's own error
+- `CheckSpamResponse::getSkipCategory()` — a **closed** set of seven values
+  (`not_configured`, `auth`, `quota`, `rate_limit`, `rejected`,
+  `transport`, `no_verdict`, plus the empty string when there is a verdict)
+  sitting alongside the deliberately open `getSkipReason()`. The axis is cut
+  by what the caller should do: an unconfigured site is not an outage, a
+  rejected key is not an unreachable host, and an account blocked in the
+  dashboard is not the same problem as a malformed request. The reason string carries the backend's own error
   code and the backend adds codes whenever it likes, which makes it right
   for a log line and wrong for a `switch` or a narrow column. Without a
   shared closed axis every integration invents its own enum over the reason

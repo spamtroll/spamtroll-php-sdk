@@ -69,10 +69,19 @@ lower-cased backend error code. That set is **open** — do not `switch` on
 it and do not constrain a column to it.
 
 For control flow and storage use `getSkipCategory()` instead, which is a
-closed set of five: `transport`, `quota`, `rate_limit`, `rejected`,
-`no_verdict` (and `''` when there is a verdict). If you already maintain
-your own enum of skip reasons, map it onto these five and drop your
-dictionary — the whole point is that the six integrations share one.
+closed set of seven: `not_configured`, `auth`, `quota`, `rate_limit`,
+`rejected`, `transport`, `no_verdict` (and `''` when there is a verdict).
+Each one selects a different action — see the table in
+[ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
+
+If you already maintain your own enum of post-call failure reasons, map it
+onto these seven and drop that part of your dictionary; the point is that
+the six integrations share one. What the SDK **cannot** express is any
+reason you never called it at all — content exempted, empty body, your own
+circuit breaker already open. Those stay yours, because no value derived
+from a response can carry them. Keep them, and keep them distinguishable
+from `transport`: "the breaker is open" and "the API is down" look the
+same in a log and mean different things.
 
 ### 3. `getStatus()` is the verdict; the score is display
 
