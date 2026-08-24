@@ -30,13 +30,13 @@ final class CheckSpamRequest
     public const MAX_CONTENT_BYTES = 65536;
 
     /**
-     * @param string                $content    Plain-text body to scan.
-     * @param string                $source     One of the SOURCE_* constants.
-     * @param ?string               $ipAddress  Author IP. Strongly recommended — see docs/USAGE.md.
-     * @param ?string               $username   Author display name.
-     * @param ?string               $email      Author e-mail address.
-     * @param ?string               $rawMessage Full RFC 822 message, byte for byte, for real DKIM verification.
-     * @param array<string, string> $headers    E-mail headers (From, Subject, Authentication-Results, …).
+     * @param string $content Plain-text body to scan.
+     * @param string $source One of the SOURCE_* constants.
+     * @param ?string $ipAddress Author IP. Strongly recommended — see docs/USAGE.md.
+     * @param ?string $username Author display name.
+     * @param ?string $email Author e-mail address.
+     * @param ?string $rawMessage Full RFC 822 message, byte for byte, for real DKIM verification.
+     * @param array<string, string> $headers E-mail headers (From, Subject, Authentication-Results, …).
      */
     public function __construct(
         public readonly string $content,

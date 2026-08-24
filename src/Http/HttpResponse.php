@@ -7,9 +7,9 @@ namespace Spamtroll\Sdk\Http;
 final class HttpResponse
 {
     /**
-     * @param int                   $statusCode Real HTTP status code. Never 0 — signal "no response" with an exception.
-     * @param string                $body       Response body, verbatim.
-     * @param array<string, string> $headers    Lowercased header name => value.
+     * @param int $statusCode Real HTTP status code. Never 0 — signal "no response" with an exception.
+     * @param string $body Response body, verbatim.
+     * @param array<string, string> $headers Lowercased header name => value.
      */
     public function __construct(
         public readonly int $statusCode,

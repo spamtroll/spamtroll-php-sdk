@@ -42,7 +42,8 @@ final class Client
     private HttpClientInterface $http;
 
     public function __construct(
-        #[SensitiveParameter] private readonly string $apiKey,
+        #[SensitiveParameter]
+        private readonly string $apiKey,
         ?ClientConfig $config = null,
         ?HttpClientInterface $http = null,
     ) {

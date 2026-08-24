@@ -9,9 +9,9 @@ use Spamtroll\Sdk\Internal\ErrorEnvelope;
 class Response
 {
     /**
-     * @param array<string, mixed> $data      Decoded JSON body, as received.
-     * @param ?string              $error     Human-readable error text, non-null when success is false.
-     * @param ?string              $errorCode Machine-readable backend code, e.g. QUOTA_EXCEEDED.
+     * @param array<string, mixed> $data Decoded JSON body, as received.
+     * @param ?string $error Human-readable error text, non-null when success is false.
+     * @param ?string $errorCode Machine-readable backend code, e.g. QUOTA_EXCEEDED.
      */
     public function __construct(
         public readonly bool $success,
