@@ -43,10 +43,29 @@ Since 0.10.0 it lives in one place. `checkSpamOrHam()` catches
 successful scan. There is no path through the SDK that turns a failure
 into a block.
 
-## Skip reasons
+## Skip categories — switch on these
 
-`getSkipReason()` is a machine-readable string, empty only when a verdict
-was actually reached. Log it verbatim.
+`getSkipCategory()` returns one of **five** values, and the set is closed.
+Every skipped response maps to exactly one, and a backend error code that
+did not exist when your plugin shipped lands in an existing bucket rather
+than inventing a sixth. Use it for control flow and for anything you
+persist.
+
+| Category | Constant | When | What a plugin should do |
+|---|---|---|---|
+| `transport` | `SKIP_CATEGORY_TRANSPORT` | No answer at all: missing key, DNS, timeout, 401, 5xx after retries, an adapter that threw | Fail open, log, and trip your circuit breaker if you have one |
+| `quota` | `SKIP_CATEGORY_QUOTA` | HTTP 402 — the account is out of scans | Fail open and tell the admin; `getQuotaUsage()` has the numbers |
+| `rate_limit` | `SKIP_CATEGORY_RATE_LIMIT` | HTTP 429 | Fail open and back off |
+| `rejected` | `SKIP_CATEGORY_REJECTED` | Any other 4xx — the backend refused the request | Fail open and log; this one usually means a bug in the caller |
+| `no_verdict` | `SKIP_CATEGORY_NO_VERDICT` | HTTP 2xx with no classification in the body | Fail open and log; suspect a proxy or captive portal |
+| `''` | `SKIP_CATEGORY_NONE` | A verdict was reached | Act on `shouldBlock()` / `shouldModerate()` |
+
+## Skip reasons — log these
+
+`getSkipReason()` is the detailed string behind the category, and its set
+is **open**: it carries the backend's own error code, lower-cased, and the
+backend may add codes at any time. That makes it right for a log line and
+wrong for a `switch` or a narrow database column. Log it verbatim.
 
 | Reason | Meaning |
 |---|---|

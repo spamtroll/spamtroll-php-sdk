@@ -178,3 +178,76 @@ it('scans content that is not valid UTF-8 instead of refusing it', function (): 
     expect($body)->toBeString()
         ->and(json_decode((string) $body, true))->toBeArray();
 });
+
+it('maps every failure onto the closed set of skip categories', function (string $mode): void {
+    // getSkipReason() is open by design — it carries the backend's own error
+    // code, and the backend adds codes whenever it likes. getSkipCategory()
+    // is the closed axis plugins can switch on and store in a narrow column.
+    // This asserts the set really is closed: no failure mode escapes it.
+    $closedSet = [
+        CheckSpamResponse::SKIP_CATEGORY_TRANSPORT,
+        CheckSpamResponse::SKIP_CATEGORY_QUOTA,
+        CheckSpamResponse::SKIP_CATEGORY_RATE_LIMIT,
+        CheckSpamResponse::SKIP_CATEGORY_REJECTED,
+        CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT,
+    ];
+
+    $http = fakeHttp();
+    failureModes()[$mode]($http);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('hello world', 'comment'));
+
+    expect($response->getSkipCategory())->toBeIn($closedSet);
+})->with(array_keys(failureModes()));
+
+it('sorts each kind of failure into the category a plugin would act on', function (): void {
+    $transport = fakeHttp()
+        ->queueException(TimeoutException::afterSeconds(3))
+        ->queueException(TimeoutException::afterSeconds(3));
+    $quota = fakeHttp()->queueJson(402, ['success' => false, 'error' => ['code' => 'QUOTA_EXCEEDED']]);
+    $rateLimit = fakeHttp()->queueJson(429, ['error' => true, 'message' => 'Rate limit exceeded.']);
+    $rejected = fakeHttp()->queueJson(422, ['success' => false, 'error' => ['code' => 'VALIDATION_ERROR']]);
+    $noVerdict = fakeHttp()->queueResponse(200, '<html>Sign in to continue</html>');
+
+    $request = new CheckSpamRequest('x');
+
+    expect(makeClient($transport)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_TRANSPORT)
+        ->and(makeClient($quota)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_QUOTA)
+        ->and(makeClient($rateLimit)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_RATE_LIMIT)
+        ->and(makeClient($rejected)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_REJECTED)
+        ->and(makeClient($noVerdict)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT);
+});
+
+it('reports no category at all when there is a verdict', function (): void {
+    $http = fakeHttp()->queueJson(200, [
+        'success' => true,
+        'data' => ['status' => 'blocked', 'spam_score' => 20],
+    ]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('spam'));
+
+    expect($response->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_NONE)
+        ->and($response->getSkipCategory())->toBe('')
+        ->and($response->getSkipReason())->toBe('');
+});
+
+it('keeps a new backend error code inside an existing category', function (): void {
+    // The point of the closed axis: a code the SDK has never heard of still
+    // lands somewhere a plugin already handles, instead of forcing a sixth
+    // bucket into six separate dictionaries.
+    $http = fakeHttp()->queueJson(451, ['success' => false, 'error' => [
+        'code' => 'BLOCKED_FOR_LEGAL_REASONS',
+        'message' => 'Something invented after this SDK shipped',
+    ]]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($response->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_REJECTED)
+        ->and($response->getSkipReason())->toBe('blocked_for_legal_reasons')
+        ->and($response->isSpam())->toBeFalse();
+});

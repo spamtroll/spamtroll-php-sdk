@@ -29,6 +29,14 @@ the constraint in a plugin.
   four plugins had been re-deriving a verdict from the normalised score
   with their own hard-coded cut-offs because `status` was awkward to
   reach.
+- `CheckSpamResponse::getSkipCategory()` — a **closed** set of five values
+  (`transport`, `quota`, `rate_limit`, `rejected`, `no_verdict`, plus the
+  empty string when there is a verdict) sitting alongside the deliberately
+  open `getSkipReason()`. The reason string carries the backend's own error
+  code and the backend adds codes whenever it likes, which makes it right
+  for a log line and wrong for a `switch` or a narrow column. Without a
+  shared closed axis every integration invents its own enum over the reason
+  string, and six dictionaries drift apart; this is the shared one.
 - `Response::$errorCode` / `getErrorCode()` — the backend's machine code
   (`QUOTA_EXCEEDED`, `VALIDATION_ERROR`, `FORBIDDEN`, …) so plugins can
   branch on something other than prose.

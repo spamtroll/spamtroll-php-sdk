@@ -65,8 +65,14 @@ If you branch on it, re-read that branch. It used to be a synonym for
 
 `getSkipReason()` gained values: `transport_error`, `rate_limited`,
 `payment_required`, `unparseable_response`, `http_<code>`, and any
-lower-cased backend error code. If you persist it in a "skipped scans"
-table, widen the column and don't constrain it to an enum.
+lower-cased backend error code. That set is **open** — do not `switch` on
+it and do not constrain a column to it.
+
+For control flow and storage use `getSkipCategory()` instead, which is a
+closed set of five: `transport`, `quota`, `rate_limit`, `rejected`,
+`no_verdict` (and `''` when there is a verdict). If you already maintain
+your own enum of skip reasons, map it onto these five and drop your
+dictionary — the whole point is that the six integrations share one.
 
 ### 3. `getStatus()` is the verdict; the score is display
 

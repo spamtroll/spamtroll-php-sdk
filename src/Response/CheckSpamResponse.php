@@ -35,6 +35,37 @@ final class CheckSpamResponse extends Response
     /** getSkipReason() value for a 2xx whose body carried no verdict. */
     public const SKIP_UNPARSEABLE_RESPONSE = 'unparseable_response';
 
+    /*
+     * Skip categories: a CLOSED set, unlike getSkipReason().
+     *
+     * getSkipReason() is deliberately open — it carries the backend's own
+     * error code, and the backend may add codes at any time. That makes it
+     * right for a log line and wrong for a switch statement or a narrow
+     * database column. These five categories are exhaustive and stable:
+     * every skipped response maps to exactly one, and new backend codes land
+     * in an existing bucket rather than inventing a sixth.
+     *
+     * Switch on the category, log the reason.
+     */
+
+    /** Has a verdict; nothing was skipped. */
+    public const SKIP_CATEGORY_NONE = '';
+
+    /** The call never produced an answer: no key, DNS, timeout, 401, 5xx. */
+    public const SKIP_CATEGORY_TRANSPORT = 'transport';
+
+    /** The account is out of scans (HTTP 402). Actionable by the site owner. */
+    public const SKIP_CATEGORY_QUOTA = 'quota';
+
+    /** Too many requests (HTTP 429). Back off and try later. */
+    public const SKIP_CATEGORY_RATE_LIMIT = 'rate_limit';
+
+    /** The backend refused the request itself (any other 4xx). */
+    public const SKIP_CATEGORY_REJECTED = 'rejected';
+
+    /** A 2xx that carried no classification — HTML, empty body, a proxy. */
+    public const SKIP_CATEGORY_NO_VERDICT = 'no_verdict';
+
     /** Upper bound on any server-supplied symbol or category name. These
      *  strings are rendered in moderation panels.
      */
@@ -220,6 +251,41 @@ final class CheckSpamResponse extends Response
         // 2xx that carried no `status` — an HTML error page, an empty body,
         // a proxy answering on the API's behalf.
         return self::SKIP_UNPARSEABLE_RESPONSE;
+    }
+
+    /**
+     * Which of the five closed skip categories this response falls into;
+     * SKIP_CATEGORY_NONE when a verdict was reached.
+     *
+     * Use this for control flow and for anything you persist. Six
+     * integrations each inventing their own enum over getSkipReason() is
+     * six dictionaries that drift; this is the shared one.
+     */
+    public function getSkipCategory(): string
+    {
+        if ($this->hasVerdict()) {
+            return self::SKIP_CATEGORY_NONE;
+        }
+
+        if ($this->failure !== null) {
+            return self::SKIP_CATEGORY_TRANSPORT;
+        }
+
+        if ($this->httpCode === 402) {
+            return self::SKIP_CATEGORY_QUOTA;
+        }
+
+        if ($this->httpCode === 429) {
+            return self::SKIP_CATEGORY_RATE_LIMIT;
+        }
+
+        if ($this->httpCode >= 400 && $this->httpCode < 500) {
+            return self::SKIP_CATEGORY_REJECTED;
+        }
+
+        // A 5xx or a 401 only reaches here as a $failure, handled above, so
+        // what is left is a 2xx whose body carried no classification.
+        return self::SKIP_CATEGORY_NO_VERDICT;
     }
 
     /**
