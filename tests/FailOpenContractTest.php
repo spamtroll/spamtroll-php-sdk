@@ -191,6 +191,7 @@ it('maps every failure onto the closed set of skip categories', function (string
         CheckSpamResponse::SKIP_CATEGORY_QUOTA,
         CheckSpamResponse::SKIP_CATEGORY_RATE_LIMIT,
         CheckSpamResponse::SKIP_CATEGORY_REJECTED,
+        CheckSpamResponse::SKIP_CATEGORY_REDIRECTED,
         CheckSpamResponse::SKIP_CATEGORY_TRANSPORT,
         CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT,
     ];
@@ -237,6 +238,37 @@ it('sorts each kind of failure into the category a plugin would act on', functio
         ->toBe(CheckSpamResponse::SKIP_CATEGORY_TRANSPORT)
         ->and(makeClient($noVerdict)->checkSpamOrHam($request)->getSkipCategory())
         ->toBe(CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT);
+});
+
+it('reports a redirect as its own category, for every 3xx', function (int $status): void {
+    // Reachable precisely because the SDK refuses to follow redirects: a 3xx
+    // is now a result the caller sees rather than something curl resolves on
+    // its own. Almost always a baseUrl that redirects http -> https or adds a
+    // trailing slash, which answers identically forever until someone edits
+    // the setting — so it is neither a transient outage nor a caller bug.
+    $http = fakeHttp()->queueResponse($status, '', ['location' => 'https://elsewhere.example/scan/check']);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($response->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_REDIRECTED)
+        ->and($response->getSkipReason())->toBe('http_' . $status)
+        ->and($response->isSpam())->toBeFalse()
+        ->and($http->callCount())->toBe(1);   // never retried: it will not change its mind
+})->with([301, 302, 303, 307, 308]);
+
+it('does not confuse a redirect with a captive portal', function (): void {
+    // Both mean "something is between us and the API", but they need
+    // different words in an admin notice: one is a URL the owner can fix,
+    // the other is a network the owner may not control.
+    $redirect = makeClient(fakeHttp()->queueResponse(302, '', ['location' => 'https://elsewhere.example/']))
+        ->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    $portal = makeClient(fakeHttp()->queueResponse(200, '<html>Sign in to continue</html>'))
+        ->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($redirect->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_REDIRECTED)
+        ->and($portal->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT)
+        ->and($redirect->getSkipCategory())->not->toBe($portal->getSkipCategory());
 });
 
 it('separates an unconfigured site from an unreachable API', function (): void {

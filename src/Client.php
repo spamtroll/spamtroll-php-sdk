@@ -279,7 +279,10 @@ final class Client
                 continue;
             }
 
-            // Other 4xx — surface as an unsuccessful Response, no retry.
+            // Everything else the SDK does not treat specially — other 4xx,
+            // and 3xx, which is reachable exactly because redirects are never
+            // followed. Surfaced as an unsuccessful Response, never retried:
+            // none of these changes answer if asked again.
             return [false, $http->statusCode, $decoded, $errorMessage, $errorCode];
         }
 

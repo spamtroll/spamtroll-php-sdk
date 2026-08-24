@@ -69,8 +69,9 @@ lower-cased backend error code. That set is **open** — do not `switch` on
 it and do not constrain a column to it.
 
 For control flow and storage use `getSkipCategory()` instead, which is a
-closed set of seven: `not_configured`, `auth`, `quota`, `rate_limit`,
-`rejected`, `transport`, `no_verdict` (and `''` when there is a verdict).
+closed set of eight: `not_configured`, `auth`, `quota`, `rate_limit`,
+`rejected`, `redirected`, `transport`, `no_verdict` (and `''` when there is
+a verdict).
 Each one selects a different action — see the table in
 [ERROR_HANDLING.md](docs/ERROR_HANDLING.md).
 

@@ -98,6 +98,21 @@ final class CheckSpamResponse extends Response
     /** No answer at all: DNS, timeout, refused, 5xx after retries. */
     public const SKIP_CATEGORY_TRANSPORT = 'transport';
 
+    /**
+     * The endpoint answered with a redirect (any 3xx).
+     *
+     * The SDK refuses to follow redirects — a redirect carries `X-API-Key` to
+     * whatever host `Location` names — so a 3xx is a result the caller sees
+     * rather than something that quietly resolves itself. It is its own
+     * category because it is the only failure that is both **persistent** and
+     * **fixable by the site owner**: nearly always a `baseUrl` that redirects
+     * (`http://` to `https://`, or a trailing-slash canonicalisation), and it
+     * will answer identically forever until someone edits the setting. Tell
+     * the admin to correct the URL; do not treat it as a transient outage,
+     * and do not keep retrying it.
+     */
+    public const SKIP_CATEGORY_REDIRECTED = 'redirected';
+
     /** A 2xx that carried no classification — HTML, empty body, a proxy. */
     public const SKIP_CATEGORY_NO_VERDICT = 'no_verdict';
 
@@ -339,6 +354,10 @@ final class CheckSpamResponse extends Response
         // plugin test suites do — lands in the same place.
         if ($this->httpCode === 401 || $this->httpCode === 403) {
             return self::SKIP_CATEGORY_AUTH;
+        }
+        // Reachable precisely because the SDK does not follow redirects.
+        if ($this->httpCode >= 300 && $this->httpCode < 400) {
+            return self::SKIP_CATEGORY_REDIRECTED;
         }
         if ($this->httpCode >= 400 && $this->httpCode < 500) {
             return self::SKIP_CATEGORY_REJECTED;

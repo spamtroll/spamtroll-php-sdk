@@ -56,7 +56,7 @@ the fail-open default, and it means a plugin that only checks
 
 ```php
 $response->wasSkipped();      // exact inverse of hasVerdict()
-$response->getSkipCategory(); // closed set of seven: switch on this, store this
+$response->getSkipCategory(); // closed set of eight: switch on this, store this
 $response->getSkipReason();   // open string: 'transport_error', 'quota_exceeded', … — log this
 $response->getFailure();      // ?\Throwable — set when the call itself failed
 $response->isQuotaExceeded(); // HTTP 402 with error.code = QUOTA_EXCEEDED

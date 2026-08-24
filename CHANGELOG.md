@@ -31,11 +31,14 @@ the constraint in a plugin.
   reach.
 - `CheckSpamResponse::getSkipCategory()` — a **closed** set of seven values
   (`not_configured`, `auth`, `quota`, `rate_limit`, `rejected`,
-  `transport`, `no_verdict`, plus the empty string when there is a verdict)
+  `redirected`, `transport`, `no_verdict`, plus the empty string when there
+  is a verdict)
   sitting alongside the deliberately open `getSkipReason()`. The axis is cut
   by what the caller should do: an unconfigured site is not an outage, a
-  rejected key is not an unreachable host, and an account blocked in the
-  dashboard is not the same problem as a malformed request. The reason string carries the backend's own error
+  rejected key is not an unreachable host, an account blocked in the
+  dashboard is not the same problem as a malformed request, and a `baseUrl`
+  that redirects is a setting the owner can fix rather than a network fault
+  to wait out. The reason string carries the backend's own error
   code and the backend adds codes whenever it likes, which makes it right
   for a log line and wrong for a `switch` or a narrow column. Without a
   shared closed axis every integration invents its own enum over the reason
