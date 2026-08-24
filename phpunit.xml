@@ -7,6 +7,7 @@
     cacheDirectory=".phpunit.cache"
     failOnWarning="true"
     failOnRisky="true"
+    failOnEmptyTestSuite="true"
     executionOrder="random">
     <testsuites>
         <testsuite name="unit">
