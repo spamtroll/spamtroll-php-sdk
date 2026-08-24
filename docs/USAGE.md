@@ -11,7 +11,7 @@ use Spamtroll\Sdk\Request\CheckSpamRequest;
 
 $client = new Client('your-api-key');
 
-$response = $client->checkSpam(new CheckSpamRequest(
+$response = $client->checkSpamOrHam(new CheckSpamRequest(
     content: $commentBody,
     source: CheckSpamRequest::SOURCE_COMMENT,
     ipAddress: $_SERVER['REMOTE_ADDR'] ?? null,
@@ -19,12 +19,30 @@ $response = $client->checkSpam(new CheckSpamRequest(
     email: $authorEmail,
 ));
 
-if ($response->isSpam()) {
-    // Score >= spam threshold — block.
-} elseif ($response->getSpamScore() >= 0.4) {
-    // Suspicious — send to moderation.
+if ($response->wasSkipped()) {
+    // No verdict — API unreachable, quota exhausted, rate limited.
+    // Let the content through and log why.
+    error_log('spamtroll: skipped (' . $response->getSkipReason() . ') ' . ($response->error ?? ''));
+} elseif ($response->shouldBlock()) {
+    // Server verdict: blocked.
+} elseif ($response->shouldModerate()) {
+    // Server verdict: suspicious — send to the moderation queue.
 }
 ```
+
+`checkSpamOrHam()` **never throws**. Whatever goes wrong — no API key,
+DNS failure, timeout, 401, 5xx, quota exhausted, a captive portal
+answering with HTML — you get a `CheckSpamResponse` that reports
+`wasSkipped() === true` and `shouldBlock() === false`.
+
+That is the whole point: **only a successful scan can produce a blocking
+verdict**. An integration written against this method cannot fail closed
+by forgetting a `catch`.
+
+`checkSpam()` still exists and still throws, for callers that want to
+handle the exception hierarchy themselves. If you use it, catch
+`\Throwable` and let the content through — see
+[ERROR_HANDLING.md](ERROR_HANDLING.md).
 
 ## With a custom configuration
 
@@ -35,23 +53,23 @@ use Spamtroll\Sdk\ClientConfig;
 $client = new Client(
     apiKey: 'your-api-key',
     config: new ClientConfig(
-        timeout: 5,
-        maxRetries: 3,
-        retryBaseDelayMs: 500,
+        timeout: 3,
+        maxRetries: 2,
+        retryBaseDelayMs: 250,
+        totalBudgetMs: 6000,
         userAgent: 'my-plugin/1.2.3 spamtroll-php-sdk/' . \Spamtroll\Sdk\Version::VERSION,
         scoreDenominator: 30.0,
     ),
 );
 ```
 
-See [CONFIGURATION.md](CONFIGURATION.md) for what every field does and
-when to deviate from the defaults.
+See [CONFIGURATION.md](CONFIGURATION.md) for what every field does, the
+worst-case latency each preset implies, and when to deviate.
 
 ## With a custom HTTP transport
 
 ```php
 use Spamtroll\Sdk\Client;
-use Spamtroll\Sdk\Http\HttpClientInterface;
 
 $client = new Client(
     apiKey: 'your-api-key',
@@ -61,27 +79,47 @@ $client = new Client(
 
 This is the integration point for WordPress (`wp_remote_*`) and IPS
 (`\IPS\Http\Url`). See [HTTP_ADAPTERS.md](HTTP_ADAPTERS.md) for the
-contract and reference implementations.
+contract — including the rule that adapters must never follow redirects —
+and reference implementations.
 
 ## All Client methods
 
 | Method | Returns | What it does |
 |---|---|---|
-| `checkSpam(CheckSpamRequest)` | `CheckSpamResponse` | Submits content (post body, registration data, comment) to `/scan/check`. The hot path. |
-| `testConnection()` | `Response` | Hits `/scan/status` with a GET. Use it from admin UIs to verify the API key + connectivity. |
-| `getAccountUsage()` | `UsageResponse` | Returns `requests_today`, `requests_limit`, `requests_remaining` from `/account/usage`. Cheap; safe to call on a dashboard. |
+| `checkSpamOrHam(CheckSpamRequest)` | `CheckSpamResponse` | **The method integrations should call.** Submits content to `/scan/check` and never throws; every failure becomes a skipped, non-blocking response. |
+| `checkSpam(CheckSpamRequest)` | `CheckSpamResponse` | Same call, but throws on anything that prevents a verdict. Wrap it in `try/catch (\Throwable)`. |
+| `testConnection()` | `Response` | Hits `/scan/status` with a GET. For admin "Test Connection" buttons. Throws — an invalid key must be reported, not swallowed, so wrap it. |
 | `isConfigured()` | `bool` | True if the API key is non-empty. Cheap, no network. |
-| `getConfig()` | `ClientConfig` | Returns the active configuration object. Useful for inspecting effective values in tests. |
+| `getConfig()` | `ClientConfig` | The active configuration object. |
+
+There is no account-usage method. The backend has no usage endpoint
+reachable with an API key — `/api/v1/billing/usage` requires a JWT. The
+only quota information an integration can see is the `usage` block inside
+a 402 response, available through `getQuotaUsage()`.
 
 ## CheckSpamRequest fields
 
 | Field | Required | Notes |
 |---|---|---|
-| `content` | yes | Plain-text body. Strip HTML before passing. |
-| `source` | yes (default `generic`) | One of the `SOURCE_*` constants: `forum`, `comment`, `message`, `registration`, `generic`. |
-| `ipAddress` | no | Client IP. Improves scoring. Empty strings are dropped (not sent as `""`). |
-| `username` | no | Author display name. |
+| `content` | yes | Plain-text body. Strip HTML before passing. Truncated to 64 KiB (`MAX_CONTENT_BYTES`); `isContentTruncated()` tells you when that happened. |
+| `source` | yes (default `generic`) | See the table below. It changes how the backend scores the content, so getting it right matters. |
+| `ipAddress` | **strongly recommended** | The author's IP. **Omit it and the backend substitutes the IP the request came from — your own web server.** Every IP-based stage then scores your server instead of the spammer, your server accumulates the reputation, and `hosting_check` adds points to every single scan because your host is in a datacentre. |
+| `username` | no | Author display name. Used by the registration stage. |
 | `email` | no | Author email. Used for blocklist correlation. |
+| `rawMessage` | mail integrations: yes | The full RFC 822 message, **byte for byte** — no CRLF normalisation, no header rewriting. This is what enables real cryptographic DKIM verification. Without it the auth stage falls back to header-only checking, which an attacker defeats by pasting any `DKIM-Signature` header. |
+| `headers` | mail integrations: recommended | E-mail headers (`From`, `Subject`, `List-Id`, `Authentication-Results`, …) as a `array<string, string>`. These are message headers, not HTTP headers. |
+
+### Source constants
+
+| Constant | Value | Effect on the backend |
+|---|---|---|
+| `SOURCE_EMAIL` | `email` | Switches RETVec to the **e-mail** model. Mail integrations must use this; anything else gets the web model and a systematically shifted classification. |
+| `SOURCE_REGISTRATION` | `registration` | Skips content analysis, RETVec and Bayes, and skips the AI stage entirely. |
+| `SOURCE_COMMENT` | `comment` | Web model, full pipeline. |
+| `SOURCE_FORUM` | `forum` | Web model, full pipeline. |
+| `SOURCE_CONTACT_FORM` | `contact_form` | Web model, full pipeline. |
+| `SOURCE_MESSAGE` | `message` | Web model. Not branched on by the backend today; may drive per-source symbol weights. |
+| `SOURCE_GENERIC` | `generic` | Default. Same as above. |
 
 `CheckSpamRequest::toArray()` returns the canonical wire format —
 `content`, `source`, plus any non-empty optional fields. Empty optional
@@ -89,5 +127,6 @@ fields are *omitted*, not sent as empty strings.
 
 ## Reading the response
 
-See [RESPONSE_SCHEMA.md](RESPONSE_SCHEMA.md) for every getter, the
-score normalisation formula, and the envelope-vs-flat payload handling.
+See [RESPONSE_SCHEMA.md](RESPONSE_SCHEMA.md) for every getter, why
+`getStatus()` is the verdict and `getSpamScore()` is not, and the
+envelope handling.
