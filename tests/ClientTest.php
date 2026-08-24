@@ -11,7 +11,6 @@ use Spamtroll\Sdk\Exception\ServerException;
 use Spamtroll\Sdk\Exception\TimeoutException;
 use Spamtroll\Sdk\Request\CheckSpamRequest;
 use Spamtroll\Sdk\Response\CheckSpamResponse;
-use Spamtroll\Sdk\Response\UsageResponse;
 use Spamtroll\Sdk\Tests\Fake\FakeHttpClient;
 use Spamtroll\Sdk\Version;
 
@@ -111,8 +110,10 @@ it('returns a CheckSpamResponse with isQuotaExceeded=true on 402 QUOTA_EXCEEDED'
 });
 
 it('returns a Response with success=false on 429 without retrying', function (): void {
+    // The HTTP rate limiter answers with the legacy envelope, where `error`
+    // is the boolean flag and the text lives in `message`.
     $http = fakeHttp()
-        ->queueJson(429, ['error' => 'rate limited'])
+        ->queueJson(429, ['error' => true, 'message' => 'Rate limit exceeded. Maximum 100 requests per minute.'])
         ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
     $client = makeClient($http);
 
@@ -120,35 +121,137 @@ it('returns a Response with success=false on 429 without retrying', function ():
 
     expect($response->success)->toBeFalse()
         ->and($response->httpCode)->toBe(429)
-        ->and($response->error)->toBe('rate limited')
+        ->and($response->error)->toBe('Rate limit exceeded. Maximum 100 requests per minute.')
+        ->and($response->getErrorCode())->toBeNull()
+        ->and($response->getSkipReason())->toBe('rate_limited')
         ->and($http->callCount())->toBe(1);
 });
 
 it('returns a Response with success=false on other 4xx without retrying', function (): void {
-    $http = fakeHttp()->queueJson(400, ['error' => 'bad request']);
+    // Standard envelope: `error` is an object, so the readable text and the
+    // machine code both have to be dug out of it.
+    $http = fakeHttp()->queueJson(422, ['success' => false, 'error' => [
+        'code' => 'VALIDATION_ERROR',
+        'message' => 'Content is required',
+        'request_id' => 'req-77',
+    ]]);
     $client = makeClient($http);
 
     $response = $client->checkSpam(new CheckSpamRequest('x'));
 
     expect($response->success)->toBeFalse()
-        ->and($response->httpCode)->toBe(400)
-        ->and($response->error)->toBe('bad request')
+        ->and($response->httpCode)->toBe(422)
+        ->and($response->error)->toBe('Content is required')
+        ->and($response->getErrorCode())->toBe('VALIDATION_ERROR')
+        ->and($response->getRequestId())->toBe('req-77')
         ->and($http->callCount())->toBe(1);
 });
 
-it('retries 5xx responses up to maxRetries before throwing ServerException', function (): void {
+it('retries a GET 5xx up to maxRetries before throwing ServerException', function (): void {
     $http = fakeHttp()
-        ->queueJson(500, ['error' => 'boom'])
-        ->queueJson(502, ['error' => 'bad gateway'])
-        ->queueJson(503, ['error' => 'unavailable']);
-    $client = makeClient($http);
+        ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'boom']])
+        ->queueJson(502, ['error' => true, 'message' => 'bad gateway'])
+        ->queueJson(503, ['error' => true, 'message' => 'unavailable']);
+    $client = makeClient($http, new ClientConfig(maxRetries: 3, retryBaseDelayMs: 0));
+
+    try {
+        $client->testConnection();
+        test()->fail('Expected ServerException');
+    } catch (ServerException $e) {
+        expect($e->httpCode)->toBe(503)
+            ->and($http->callCount())->toBe(3);
+    }
+});
+
+it('retries a POST 5xx exactly once, whatever maxRetries says', function (): void {
+    // The backend bills a scan against the daily quota before it runs, so a
+    // 500 has already been paid for. Three attempts would bill a customer
+    // three times for one failed scan during an outage they did not cause.
+    $http = fakeHttp()
+        ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']])
+        ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']])
+        ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']])
+        ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']])
+        ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']]);
+    $client = makeClient($http, new ClientConfig(maxRetries: 5, retryBaseDelayMs: 0));
 
     try {
         $client->checkSpam(new CheckSpamRequest('x'));
         test()->fail('Expected ServerException');
     } catch (ServerException $e) {
-        expect($e->httpCode)->toBe(503)
-            ->and($http->callCount())->toBe(3);
+        expect($http->callCount())->toBe(2)
+            ->and($e->apiErrorCode)->toBe('INTERNAL_ERROR');
+    }
+});
+
+it('sends one idempotency key per call and reuses it across retries', function (): void {
+    $http = fakeHttp()
+        ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']])
+        ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe', 'spam_score' => 0]]);
+    $client = makeClient($http);
+
+    $client->checkSpam(new CheckSpamRequest('x'));
+
+    expect($http->callCount())->toBe(2);
+    $first = $http->calls[0]['headers']['Idempotency-Key'] ?? null;
+    $second = $http->calls[1]['headers']['Idempotency-Key'] ?? null;
+
+    expect($first)->toBeString()
+        ->and($first)->toMatch('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/')
+        ->and($second)->toBe($first);
+});
+
+it('generates a fresh idempotency key for each call', function (): void {
+    $http = fakeHttp()
+        ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']])
+        ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
+    $client = makeClient($http);
+
+    $client->checkSpam(new CheckSpamRequest('one'));
+    $client->checkSpam(new CheckSpamRequest('two'));
+
+    expect($http->calls[1]['headers']['Idempotency-Key'])
+        ->not->toBe($http->calls[0]['headers']['Idempotency-Key']);
+});
+
+it('does not send an idempotency key on GET requests', function (): void {
+    $http = fakeHttp()->queueJson(200, ['success' => true, 'data' => ['status' => 'running']]);
+    $client = makeClient($http);
+
+    $client->testConnection();
+
+    expect($http->lastCall()['headers'])->not->toHaveKey('Idempotency-Key');
+});
+
+it('caps the per-attempt timeout at the remaining total budget', function (): void {
+    $http = fakeHttp()->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
+    $client = makeClient($http, new ClientConfig(timeout: 10, retryBaseDelayMs: 0, totalBudgetMs: 2000));
+
+    $client->checkSpam(new CheckSpamRequest('x'));
+
+    expect($http->lastCall()['timeout'])->toBe(2);
+});
+
+it('stops retrying once the total budget is spent', function (): void {
+    $http = fakeHttp();
+    for ($i = 0; $i < 6; $i++) {
+        $http->queueException(ConnectionException::fromMessage('refused'));
+    }
+    $client = makeClient($http, new ClientConfig(
+        timeout: 1,
+        maxRetries: 6,
+        retryBaseDelayMs: 150,
+        totalBudgetMs: 300,
+    ));
+
+    $startedAt = microtime(true);
+    try {
+        $client->checkSpam(new CheckSpamRequest('x'));
+        test()->fail('Expected ConnectionException');
+    } catch (ConnectionException) {
+        $elapsed = microtime(true) - $startedAt;
+        expect($http->callCount())->toBeLessThan(6)
+            ->and($elapsed)->toBeLessThan(1.0);
     }
 });
 
@@ -167,21 +270,19 @@ it('recovers when an early 5xx is followed by a successful response', function (
 it('retries on connection failures and recovers on success', function (): void {
     $http = fakeHttp()
         ->queueException(ConnectionException::fromMessage('dns fail'))
-        ->queueException(TimeoutException::afterSeconds(5))
         ->queueJson(200, ['success' => true, 'data' => ['status' => 'safe']]);
     $client = makeClient($http);
 
     $response = $client->checkSpam(new CheckSpamRequest('x'));
 
     expect($response->success)->toBeTrue()
-        ->and($http->callCount())->toBe(3);
+        ->and($http->callCount())->toBe(2);
 });
 
 it('rethrows the final connection exception after exhausting retries', function (): void {
     $http = fakeHttp()
         ->queueException(ConnectionException::fromMessage('fail 1'))
-        ->queueException(ConnectionException::fromMessage('fail 2'))
-        ->queueException(TimeoutException::afterSeconds(5));
+        ->queueException(TimeoutException::afterSeconds(3));
     $client = makeClient($http);
 
     $client->checkSpam(new CheckSpamRequest('x'));
@@ -197,25 +298,6 @@ it('hits /scan/status with a GET when testConnection is invoked', function (): v
         ->and($http->lastCall()['method'])->toBe('GET')
         ->and($http->lastCall()['url'])->toBe('https://api.spamtroll.io/api/v1/scan/status')
         ->and($http->lastCall()['body'])->toBeNull();
-});
-
-it('parses usage fields from getAccountUsage', function (): void {
-    $http = fakeHttp()->queueJson(200, [
-        'success' => true,
-        'data' => [
-            'requests_today' => 12,
-            'requests_limit' => 1000,
-            'requests_remaining' => 988,
-        ],
-    ]);
-    $client = makeClient($http);
-
-    $response = $client->getAccountUsage();
-
-    expect($response)->toBeInstanceOf(UsageResponse::class)
-        ->and($response->getRequestsToday())->toBe(12)
-        ->and($response->getRequestsLimit())->toBe(1000)
-        ->and($response->getRequestsRemaining())->toBe(988);
 });
 
 it('uses a custom user agent when configured', function (): void {

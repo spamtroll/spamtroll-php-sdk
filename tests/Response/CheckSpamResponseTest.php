@@ -89,3 +89,91 @@ it('returns the submission id and the request id', function (): void {
     expect($response->getRequestId())->toBe('req-1')
         ->and($response->getSubmissionId())->toBe('sub-1');
 });
+
+it('treats the server status as the verdict, not the score', function (): void {
+    // Four plugins independently re-derived a verdict from the score because
+    // the SDK made `status` awkward to reach. The server owns the platform's
+    // thresholds; the SDK does not know them.
+    $blocked = new CheckSpamResponse(true, 200, [
+        'success' => true,
+        'data' => ['status' => 'blocked', 'spam_score' => 1.0],
+    ]);
+    $suspicious = new CheckSpamResponse(true, 200, [
+        'success' => true,
+        'data' => ['status' => 'suspicious', 'spam_score' => 28.0],
+    ]);
+    $safe = new CheckSpamResponse(true, 200, [
+        'success' => true,
+        'data' => ['status' => 'safe', 'spam_score' => 14.9],
+    ]);
+
+    expect($blocked->isBlocked())->toBeTrue()
+        ->and($blocked->shouldBlock())->toBeTrue()
+        ->and($blocked->shouldModerate())->toBeFalse()
+        ->and($blocked->getSpamScore())->toBeLessThan(0.1)
+
+        ->and($suspicious->shouldModerate())->toBeTrue()
+        ->and($suspicious->shouldBlock())->toBeFalse()
+        ->and($suspicious->isSpam())->toBeFalse()
+        ->and($suspicious->getSpamScore())->toBeGreaterThan(0.9)
+
+        ->and($safe->isSafe())->toBeTrue()
+        ->and($safe->shouldBlock())->toBeFalse()
+        ->and($safe->shouldModerate())->toBeFalse();
+});
+
+it('has no verdict, and therefore no status, when the call failed', function (): void {
+    $response = new CheckSpamResponse(false, 500, ['data' => ['status' => 'blocked']]);
+
+    expect($response->hasVerdict())->toBeFalse()
+        ->and($response->getStatus())->toBe(CheckSpamResponse::STATUS_SAFE)
+        ->and($response->isSafe())->toBeTrue()
+        ->and($response->wasSkipped())->toBeTrue()
+        ->and($response->getRawSpamScore())->toBe(0.0)
+        ->and($response->getSymbols())->toBe([]);
+});
+
+it('builds a fail-open response from a throwable', function (): void {
+    $failure = new RuntimeException('adapter exploded');
+
+    $response = CheckSpamResponse::failOpen($failure);
+
+    expect($response->success)->toBeFalse()
+        ->and($response->httpCode)->toBe(0)
+        ->and($response->isSpam())->toBeFalse()
+        ->and($response->hasVerdict())->toBeFalse()
+        ->and($response->getStatus())->toBe(CheckSpamResponse::STATUS_SAFE)
+        ->and($response->wasSkipped())->toBeTrue()
+        ->and($response->getSkipReason())->toBe(CheckSpamResponse::SKIP_TRANSPORT_ERROR)
+        ->and($response->getFailure())->toBe($failure)
+        ->and($response->error)->toBe('adapter exploded');
+});
+
+it('finds the request id inside the error envelope', function (): void {
+    // The backend never puts request_id at the top level; it lives in
+    // error.request_id, which is the only handle support has on a report.
+    $response = new CheckSpamResponse(false, 422, [
+        'success' => false,
+        'error' => ['code' => 'VALIDATION_ERROR', 'message' => 'Content is required', 'request_id' => 'req-42'],
+    ]);
+
+    expect($response->getRequestId())->toBe('req-42')
+        ->and($response->getMessage())->toBe('Content is required')
+        ->and($response->getErrorCode())->toBe('VALIDATION_ERROR');
+});
+
+it('truncates server-supplied labels before a moderator ever sees them', function (): void {
+    $response = new CheckSpamResponse(true, 200, [
+        'success' => true,
+        'data' => [
+            'status' => 'safe',
+            'symbols' => [str_repeat('A', 5000)],
+            'threat_categories' => [str_repeat('B', 5000)],
+        ],
+    ]);
+
+    expect(mb_strlen($response->getSymbols()[0]))
+        ->toBeLessThanOrEqual(CheckSpamResponse::MAX_LABEL_LENGTH + 1)
+        ->and(mb_strlen($response->getThreatCategories()[0]))
+        ->toBeLessThanOrEqual(CheckSpamResponse::MAX_LABEL_LENGTH + 1);
+});
