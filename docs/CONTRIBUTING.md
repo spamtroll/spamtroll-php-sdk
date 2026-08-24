@@ -6,10 +6,9 @@ page documents the development setup and the bar for changes.
 
 ## Local setup
 
-The SDK runs on PHP 8.0 in production, but the **dev tooling
-(Pest, peck, php-cs-fixer) requires PHP 8.3+**. You need PHP 8.3 to
-run the full test suite locally. CI runs the test matrix on
-8.0 → 8.4.
+PHP **8.2+** for everything — runtime, tests and tooling. CI runs the
+test matrix on 8.2, 8.3 and 8.4 against both `--prefer-lowest` and
+`--prefer-stable` dependencies.
 
 ```bash
 git clone https://github.com/spamtroll/spamtroll-php-sdk.git
@@ -24,8 +23,12 @@ sudo apt install aspell aspell-en       # Debian / Ubuntu
 brew install aspell                     # macOS
 ```
 
-If you don't install aspell, `composer peck` will fail locally — CI
-will still run it for you in pull requests, so this is optional.
+If you don't install aspell, `composer peck` will fail locally. This is
+optional: peck runs in CI as **advisory only** (`continue-on-error`). A
+dictionary-based spell checker flags every new domain word — a symbol
+name, a backend error code — as a misspelling until someone adds it to
+`peck.json`, and blocking merges on that punishes unrelated pull requests
+for the dictionary's gaps. Fix real typos; add real words to `peck.json`.
 
 ## Quality gate
 
@@ -43,14 +46,16 @@ That runs in order:
    baseline tolerated for new code).
 3. `composer peck` — aspell-based spell-check. Failure either means a
    real typo or a domain word that should be added to `peck.json`.
-4. `composer test` — full Pest suite (unit + arch).
+   Advisory in CI, see above.
+4. `composer test` — full Pest suite (unit + arch + the fail-open
+   contract).
 
 CI runs the same set on every push and PR. We won't merge a red CI.
 
 ## Coding standards
 
 - **PSR-12** enforced by php-cs-fixer (`@PSR12 + @PSR12:risky +
-  @PHP80Migration:risky`). All code declares `strict_types=1`.
+  @PHP82Migration:risky`). All code declares `strict_types=1`.
 - **PHPStan level 9** clean, with `phpstan-strict-rules` enabled.
 - **PHPDoc array generics** required (`array<string, mixed>`, not
   `array`). Tuples typed via `array{0: bool, ...}`.
@@ -74,23 +79,42 @@ Cover both happy path and failure modes. The SDK's whole job is being
 robust to API failures, so a feature without a "what if the API
 returns garbage" test isn't done.
 
+Anything touching the scan path also belongs in
+`tests/FailOpenContractTest.php`, which walks every failure mode and
+asserts that none of them throws, blocks or moderates. If you add a new
+way for a call to fail, add it to that matrix.
+
+### Prove the test would have caught it
+
+A test that passes against the broken code proves nothing. Before
+opening a PR for a bug fix:
+
+```bash
+bash dev/prove-regression.sh          # defaults to comparing against main
+```
+
+It extracts `src/` at the base ref, points the current suite at it
+through `tests/bootstrap.php`'s `SPAMTROLL_SRC_DIR` override, and fails
+if the suite stays green.
+
 ## Versioning
 
-Strict SemVer from `v1.0.0` onwards. We're currently in `0.x` while
-the WordPress and IPS plugin integrations bake.
+We are in `0.x`, where SemVer §4 allows a minor to break compatibility —
+and 0.10.0 uses that allowance. Every breaking change is listed in
+[UPGRADE.md](../UPGRADE.md) with the migration.
 
-- Patch (`0.9.0` → `0.9.1`) — bug fixes, doc updates, internal
+- Patch (`0.10.0` → `0.10.1`) — bug fixes, doc updates, internal
   refactors. No public API changes.
-- Minor (`0.9.0` → `0.10.0`) — additive changes (new methods, new
-  config fields with defaults). Backwards-compatible.
-- Major (`0.x` → `1.0.0` and beyond) — breaking changes. Documented
-  in [UPGRADE.md](../UPGRADE.md). Deprecated in a previous minor with
-  `@deprecated` plus `trigger_error(..., E_USER_DEPRECATED)` whenever
-  feasible.
+- Minor (`0.10.0` → `0.11.0`) — additive changes, and, while we are
+  pre-1.0, breaking ones. Both go in `UPGRADE.md`.
+- `1.0.0` — the point at which the API is declared stable and breaking
+  changes require a major. Deprecate first with `@deprecated` plus
+  `trigger_error(..., E_USER_DEPRECATED)` whenever feasible.
 
-Changing the PHP minimum is a minor bump (Symfony / Doctrine
-convention). Changing `scoreDenominator` default would be a major
-because it shifts every consumer's calibrated thresholds.
+A behavioural change is a breaking change even when no signature moves.
+0.9.3 shipped "Client::dispatch() no longer throws on HTTP 402" as a
+patch; every plugin pinned to `^0.9` got it with no warning and no
+`UPGRADE.md` entry. Don't repeat that.
 
 ## Release checklist
 

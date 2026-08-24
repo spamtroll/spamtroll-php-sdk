@@ -1,48 +1,76 @@
 # Response schema
 
-The SDK ships three response types, all extending the base
-`Spamtroll\Sdk\Response\Response`:
+The SDK ships two response types:
 
 - `Response` — generic envelope, returned by `testConnection()`.
-- `CheckSpamResponse` — `/scan/check` payload, returned by `checkSpam()`.
-- `UsageResponse` — `/account/usage` payload, returned by `getAccountUsage()`.
+- `CheckSpamResponse` — `/scan/check` payload, returned by
+  `checkSpamOrHam()` and `checkSpam()`.
 
-All three expose the same four base properties:
+Both expose the same base properties:
 
 ```php
 public bool $success;          // round-trip succeeded AND HTTP 2xx
-public int $httpCode;          // HTTP status code from the server
+public int $httpCode;          // HTTP status code from the server (0 = never got one)
 public array $data;            // decoded JSON body (raw)
-public ?string $error;         // non-null when success === false
+public ?string $error;         // human-readable error text, non-null when success === false
+public ?string $errorCode;     // machine-readable backend code, when the backend sent one
 ```
 
-`$success` is the headline boolean. It says **the SDK got a usable
-answer from the server**. A 4xx with `success=false` still means the
-server replied — it just replied "no". A 5xx after retries doesn't
-even reach this layer, it throws (see [ERROR_HANDLING.md](ERROR_HANDLING.md)).
+All of them are `readonly`.
 
 ## CheckSpamResponse
 
-Returned by `checkSpam()`. The most common case in production code.
+### The verdict comes from the server
 
-### Status enum
-
-`getStatus(): string` returns one of three values:
+`getStatus()` returns one of three values, and it is **the** decision:
 
 | Constant | String | Meaning |
 |---|---|---|
-| `STATUS_BLOCKED` | `"blocked"` | Score is at or above the spam threshold. The SDK considers this definitively spam. |
-| `STATUS_SUSPICIOUS` | `"suspicious"` | Score is between the suspicious and spam thresholds. Recommended action: send to moderation. |
-| `STATUS_SAFE` | `"safe"` | Below the suspicious threshold. Recommended action: allow. |
+| `STATUS_BLOCKED` | `"blocked"` | At or above the platform's spam threshold. Block it. |
+| `STATUS_SUSPICIOUS` | `"suspicious"` | Between the suspicious and spam thresholds. Send to moderation. |
+| `STATUS_SAFE` | `"safe"` | Below the suspicious threshold. Allow. |
 
-The server makes this call. The SDK does not recompute the status from
-the score — `getStatus()` reads `data.status` directly.
+The server applies the platform's configured thresholds, which the SDK
+does not know — they are per-platform settings in the backend database,
+not constants. **Do not re-derive a verdict from `getSpamScore()`.** Four
+plugins did exactly that before 0.10.0, each with its own hard-coded
+cut-off, and each drifted away from the platform's real configuration.
+
+Predicates, in the shape a plugin actually needs:
+
+```php
+$response->hasVerdict();      // did the server classify this at all?
+$response->shouldBlock();     // status === 'blocked'
+$response->shouldModerate();  // status === 'suspicious'
+$response->isBlocked();       // same as shouldBlock()
+$response->isSuspicious();
+$response->isSafe();
+$response->isSpam();          // alias of isBlocked(), kept for readability
+```
+
+`getStatus()` returns `safe` whenever `hasVerdict()` is false. That is
+the fail-open default, and it means a plugin that only checks
+`shouldBlock()` is already correct on every failure path.
+
+### Skips
+
+```php
+$response->wasSkipped();      // exact inverse of hasVerdict()
+$response->getSkipCategory(); // closed set of eight: switch on this, store this
+$response->getSkipReason();   // open string: 'transport_error', 'quota_exceeded', … — log this
+$response->getFailure();      // ?\Throwable — set when the call itself failed
+$response->isQuotaExceeded(); // HTTP 402 with error.code = QUOTA_EXCEEDED
+$response->getQuotaUsage();   // ['current' => 200, 'limit' => 200, 'plan' => 'free', 'reset_at' => …]
+```
+
+See [ERROR_HANDLING.md](ERROR_HANDLING.md) for the full table of skip
+reasons.
 
 ### Score normalisation
 
-The Spamtroll backend scores on an open-ended additive scale where the
-configured spam threshold (default 15) means "definitely spam". The
-SDK normalises this into `0.0–1.0`:
+The backend scores on an open-ended additive scale where the configured
+spam threshold (default 15) means "definitely spam". The SDK normalises
+into `0.0–1.0`:
 
 ```
 normalised = min(1.0, raw / scoreDenominator)
@@ -57,99 +85,91 @@ normalised = min(1.0, raw / scoreDenominator)
 | 30+ | 1.00 |
 
 `getSpamScore()` returns the normalised value; `getRawSpamScore()`
-returns the raw native scale if you need to display it. Use
-`scoreDenominator` in `ClientConfig` to tune the mapping.
+returns the raw scale. Both return `0.0` when there is no verdict.
+
+**These are display values.** Show them in a moderation UI, use them to
+sort a queue, put them in a log line. Do not use them to decide whether
+to block — that is `getStatus()`.
 
 ### Symbols and threat categories
 
-Detection symbols are the rules that fired during the scan. Each
-symbol may come back as a plain string (`"BAYES_SPAM_HIGH"`) or as an
-object with a name and a score:
+Detection symbols are the rules that fired during the scan. Each symbol
+may come back as a plain string or as an object with a name and a score:
 
 ```json
 {
   "symbols": [
     "RBL_STOPFORUMSPAM",
-    {"name": "BAYES_SPAM_HIGH", "score": 4.5},
-    {"name": "KEYWORD_SPAM_MATCH", "score": 1.2}
+    {"name": "BAYES_SPAM_HIGH", "score": 4.5, "category": "bayes"}
   ]
 }
 ```
 
-`getSymbols()` flattens to a `string[]` of names —
-`['RBL_STOPFORUMSPAM', 'BAYES_SPAM_HIGH', 'KEYWORD_SPAM_MATCH']` — for
-quick display. `getSymbolDetails()` returns the full mixed array if
-you need scores for debugging.
+`getSymbols()` flattens to a `string[]` of names for quick display.
+`getSymbolDetails()` returns the full mixed array if you need scores.
+`getThreatCategories()` returns the categories of the symbols that scored
+above zero (`ip`, `content`, `bayes`, …) — the backend iterates a map to
+build it, so **the order is not stable**. Both return `[]` when the call
+was not successful.
 
-`getThreatCategories()` returns a string list like `['phishing',
-'malware']` — high-level grouping useful for admin filters.
+> Symbol and category names are server-supplied strings. The SDK
+> truncates them to 128 characters, but does **not** escape them. Escape
+> before rendering in HTML.
 
 ### Identifiers
 
 | Method | Source | What it is |
 |---|---|---|
-| `getSubmissionId()` | `data.data.submission_id` | UUID assigned to this scan. Use it to correlate a forum log entry with a scan in the Spamtroll backend. |
-| `getRequestId()` | `data.request_id` (top level) | Optional request-tracing identifier. |
-| `getMessage()` | `data.message` (top level) | Optional human-readable status message. |
+| `getSubmissionId()` | `data.submission_id` | UUID of the stored scan. **May be null**: the field is `omitempty`, and the backend still returns 200 when it could not persist the submission. |
+| `getRequestId()` | `error.request_id`, then top-level `request_id` | Request-tracing identifier. Quote it in support tickets. |
+| `getMessage()` | `error.message`, then `message`, then `data.message` | Human-readable status message. |
+| `getErrorCode()` | `error.code` | Machine-readable code. Branch on this. |
 
-### Convenience predicates
-
-```php
-$response->isSpam();              // success && status === 'blocked'
-$response->isConnectionValid();   // success && 200 <= httpCode < 300
-```
+> Before 0.10.0 `getRequestId()` looked only at the top level, where the
+> backend never puts it — so it returned `null` every time.
 
 ### Envelope handling
 
 The API can return either:
 
 ```json
-{ "success": true, "data": { "status": "blocked", "spam_score": 18, ... } }
+{ "success": true, "data": { "status": "blocked", "spam_score": 18 } }
 ```
 
 or, for legacy/flat responses:
 
 ```json
-{ "status": "blocked", "spam_score": 18, ... }
+{ "status": "blocked", "spam_score": 18 }
 ```
 
-`CheckSpamResponse` handles both transparently — it inspects
-`data.success`, and if true and `data.data` is an array, unwraps;
-otherwise it falls back to the whole payload. Callers don't need to
-care.
-
-## UsageResponse
-
-Returned by `getAccountUsage()`. Three fields:
-
-```php
-$response->getRequestsToday();      // int
-$response->getRequestsLimit();      // int (per-day quota)
-$response->getRequestsRemaining();  // int
-$response->toArray();               // array{requests_today:int, requests_limit:int, requests_remaining:int}
-```
-
-The SDK reads these from either the top level of the body or the
-nested `data` envelope, same as `CheckSpamResponse`.
+`CheckSpamResponse` handles both: it inspects `data.success`, and if true
+and `data.data` is an array, unwraps; otherwise it falls back to the
+whole payload.
 
 ## Response (base)
 
-Returned by `testConnection()`. No domain getters — just the four base
-fields plus:
+Returned by `testConnection()`.
 
 ```php
 $response->isConnectionValid();   // success && 200 <= httpCode < 300
-$response->getRequestId();        // ?string from data.request_id
-$response->getMessage();          // ?string from data.message
+$response->getRequestId();
+$response->getMessage();
+$response->getErrorCode();
 ```
 
-Use `isConnectionValid()` from your admin "Test Connection" button:
+`testConnection()` throws, because an admin clicking "Test Connection"
+needs to be told what is wrong — and the most common reason for clicking
+it, a bad API key, is an `AuthenticationException`. Wrap it:
 
 ```php
-$response = $client->testConnection();
-if ($response->isConnectionValid()) {
-    echo "API is reachable.";
-} else {
-    echo "Failed: " . ($response->error ?? 'unknown');
+try {
+    $response = $client->testConnection();
+    echo $response->isConnectionValid()
+        ? 'API is reachable.'
+        : 'Failed: ' . ($response->error ?? 'unknown');
+} catch (\Spamtroll\Sdk\Exception\AuthenticationException $e) {
+    echo 'Invalid API key.';
+} catch (\Throwable $e) {
+    echo 'Could not reach the API: ' . $e->getMessage();
 }
 ```

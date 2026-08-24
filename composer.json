@@ -10,9 +10,10 @@
         "issues": "https://github.com/spamtroll/php-sdk/issues"
     },
     "require": {
-        "php": ">=8.0",
+        "php": ">=8.2",
         "ext-curl": "*",
-        "ext-json": "*"
+        "ext-json": "*",
+        "ext-mbstring": "*"
     },
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.58",
@@ -40,7 +41,7 @@
             "phpstan/extension-installer": true
         },
         "platform": {
-            "php": "8.3"
+            "php": "8.2"
         },
         "sort-packages": true
     },

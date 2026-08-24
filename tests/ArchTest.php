@@ -41,3 +41,15 @@ arch('Response classes live under Response namespace')
     ->expect('Spamtroll\\Sdk\\Response')
     ->classes()
     ->toExtend(\Spamtroll\Sdk\Response\Response::class);
+
+arch('internal helpers stay inside the SDK')
+    ->expect('Spamtroll\\Sdk\\Internal')
+    ->toOnlyBeUsedIn('Spamtroll\\Sdk');
+
+arch('the verdict type cannot be subclassed into a different contract')
+    ->expect(\Spamtroll\Sdk\Response\CheckSpamResponse::class)
+    ->toBeFinal();
+
+arch('the client cannot be subclassed into a throwing variant')
+    ->expect(\Spamtroll\Sdk\Client::class)
+    ->toBeFinal();

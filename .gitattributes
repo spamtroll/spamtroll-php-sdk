@@ -4,3 +4,8 @@
 /.gitattributes     export-ignore
 /.gitignore         export-ignore
 /UPGRADE.md         export-ignore
+/docs               export-ignore
+/dev                export-ignore
+/.php-cs-fixer.php  export-ignore
+/peck.json          export-ignore
+/phpstan.neon       export-ignore

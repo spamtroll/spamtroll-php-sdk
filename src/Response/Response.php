@@ -4,26 +4,22 @@ declare(strict_types=1);
 
 namespace Spamtroll\Sdk\Response;
 
+use Spamtroll\Sdk\Internal\ErrorEnvelope;
+
 class Response
 {
-    public bool $success;
-
-    public int $httpCode;
-
-    /** @var array<string, mixed> */
-    public array $data;
-
-    public ?string $error;
-
     /**
-     * @param array<string, mixed> $data
+     * @param array<string, mixed> $data Decoded JSON body, as received.
+     * @param ?string $error Human-readable error text, non-null when success is false.
+     * @param ?string $errorCode Machine-readable backend code, e.g. QUOTA_EXCEEDED.
      */
-    public function __construct(bool $success, int $httpCode, array $data = [], ?string $error = null)
-    {
-        $this->success = $success;
-        $this->httpCode = $httpCode;
-        $this->data = $data;
-        $this->error = $error;
+    public function __construct(
+        public readonly bool $success,
+        public readonly int $httpCode,
+        public readonly array $data = [],
+        public readonly ?string $error = null,
+        public readonly ?string $errorCode = null,
+    ) {
     }
 
     public function isConnectionValid(): bool
@@ -31,17 +27,58 @@ class Response
         return $this->success && $this->httpCode >= 200 && $this->httpCode < 300;
     }
 
-    public function getRequestId(): ?string
+    /**
+     * Machine-readable error code. Prefer this over matching on `$error`,
+     * which is prose and may be localised or reworded by the backend.
+     */
+    public function getErrorCode(): ?string
     {
-        return isset($this->data['request_id']) && is_scalar($this->data['request_id'])
-            ? (string) $this->data['request_id']
-            : null;
+        return $this->errorCode ?? ErrorEnvelope::code($this->data);
     }
 
+    /**
+     * Request identifier, for correlating a user report with a backend log.
+     *
+     * The backend returns it inside the error envelope (`error.request_id`),
+     * not at the top level, so both locations are searched.
+     */
+    public function getRequestId(): ?string
+    {
+        return ErrorEnvelope::requestId($this->data);
+    }
+
+    /**
+     * Human-readable status message when the backend sent one. Searches the
+     * error envelope, the legacy top-level `message`, and the success
+     * envelope's `data.message` (used by /scan/feedback).
+     */
     public function getMessage(): ?string
     {
-        return isset($this->data['message']) && is_scalar($this->data['message'])
-            ? (string) $this->data['message']
-            : null;
+        $error = $this->data['error'] ?? null;
+        if (is_array($error)) {
+            $message = self::stringOrNull($error['message'] ?? null);
+            if ($message !== null) {
+                return $message;
+            }
+        }
+
+        $message = self::stringOrNull($this->data['message'] ?? null);
+        if ($message !== null) {
+            return $message;
+        }
+
+        $payload = $this->data['data'] ?? null;
+
+        return is_array($payload) ? self::stringOrNull($payload['message'] ?? null) : null;
+    }
+
+    private static function stringOrNull(mixed $value): ?string
+    {
+        if ($value === null || is_bool($value) || !is_scalar($value)) {
+            return null;
+        }
+        $string = (string) $value;
+
+        return $string === '' ? null : ErrorEnvelope::truncate($string);
     }
 }

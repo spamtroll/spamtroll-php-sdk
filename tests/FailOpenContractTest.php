@@ -1,0 +1,350 @@
+<?php
+
+declare(strict_types=1);
+
+use Spamtroll\Sdk\Client;
+use Spamtroll\Sdk\ClientConfig;
+use Spamtroll\Sdk\Exception\ConnectionException;
+use Spamtroll\Sdk\Exception\TimeoutException;
+use Spamtroll\Sdk\Request\CheckSpamRequest;
+use Spamtroll\Sdk\Response\CheckSpamResponse;
+use Spamtroll\Sdk\Tests\Fake\FakeHttpClient;
+
+/*
+|--------------------------------------------------------------------------
+| Fail-open contract
+|--------------------------------------------------------------------------
+|
+| The project rule is absolute: when the API cannot answer, the content is
+| ham. checkSpamOrHam() is where the SDK owns that rule instead of leaving
+| it to six separate plugins to remember.
+|
+| Every failure mode the backend and the transport can produce goes through
+| the same three assertions: nothing propagates, nothing is spam, and the
+| caller can tell it was skipped.
+|
+*/
+
+/**
+ * @return array<string, callable(FakeHttpClient): void>
+ */
+function failureModes(): array
+{
+    return [
+        'connection refused' => static fn (FakeHttpClient $http) => $http
+            ->queueException(ConnectionException::fromMessage('connection refused'))
+            ->queueException(ConnectionException::fromMessage('connection refused')),
+        'timeout' => static fn (FakeHttpClient $http) => $http
+            ->queueException(TimeoutException::afterSeconds(3))
+            ->queueException(TimeoutException::afterSeconds(3)),
+        'invalid api key (401)' => static fn (FakeHttpClient $http) => $http
+            ->queueJson(401, ['success' => false, 'error' => ['code' => 'UNAUTHORIZED', 'message' => 'Invalid API key']]),
+        'account blocked (403)' => static fn (FakeHttpClient $http) => $http
+            ->queueJson(403, ['success' => false, 'error' => ['code' => 'FORBIDDEN', 'message' => 'Account is blocked']]),
+        'validation error (422)' => static fn (FakeHttpClient $http) => $http
+            ->queueJson(422, ['success' => false, 'error' => ['code' => 'VALIDATION_ERROR', 'message' => 'Content is required']]),
+        'route missing (404, legacy envelope)' => static fn (FakeHttpClient $http) => $http
+            ->queueJson(404, ['error' => true, 'message' => 'Cannot POST /api/v1/scan/chek']),
+        'rate limited (429, legacy envelope)' => static fn (FakeHttpClient $http) => $http
+            ->queueJson(429, ['error' => true, 'message' => 'Rate limit exceeded. Maximum 100 requests per minute.']),
+        'quota exhausted (402)' => static fn (FakeHttpClient $http) => $http
+            ->queueJson(402, ['success' => false, 'error' => ['code' => 'QUOTA_EXCEEDED', 'message' => 'Daily scan limit reached.']]),
+        'server error (500)' => static fn (FakeHttpClient $http) => $http
+            ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']])
+            ->queueJson(500, ['success' => false, 'error' => ['code' => 'INTERNAL_ERROR', 'message' => 'Scan failed']]),
+        'gateway html error page' => static fn (FakeHttpClient $http) => $http
+            ->queueResponse(502, '<html><body>502 Bad Gateway</body></html>')
+            ->queueResponse(502, '<html><body>502 Bad Gateway</body></html>'),
+        'captive portal answering 200 with html' => static fn (FakeHttpClient $http) => $http
+            ->queueResponse(200, '<html><body>Sign in to continue</body></html>'),
+        'empty body on 200' => static fn (FakeHttpClient $http) => $http
+            ->queueResponse(200, ''),
+        'adapter reports no http status' => static fn (FakeHttpClient $http) => $http
+            ->queueResponse(0, 'SECRET-CANARY')
+            ->queueResponse(0, 'SECRET-CANARY'),
+        'adapter leaks a foreign exception' => static fn (FakeHttpClient $http) => $http
+            ->queueException(new RuntimeException('IPS\\Http\\Url\\Exception: malformed url')),
+        'adapter leaks an Error' => static fn (FakeHttpClient $http) => $http
+            ->queueException(new TypeError('wp_remote_request(): Argument #1 must be of type string')),
+        'redirect to another host' => static fn (FakeHttpClient $http) => $http
+            ->queueResponse(302, '', ['location' => 'https://evil.example/scan/check']),
+    ];
+}
+
+it('never throws and never blocks, whatever the failure', function (string $mode): void {
+    $http = fakeHttp();
+    failureModes()[$mode]($http);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('hello world', 'comment'));
+
+    expect($response)->toBeInstanceOf(CheckSpamResponse::class)
+        ->and($response->isSpam())->toBeFalse()
+        ->and($response->shouldBlock())->toBeFalse()
+        ->and($response->shouldModerate())->toBeFalse()
+        ->and($response->getStatus())->toBe(CheckSpamResponse::STATUS_SAFE)
+        ->and($response->hasVerdict())->toBeFalse()
+        ->and($response->getSpamScore())->toBe(0.0)
+        ->and($response->wasSkipped())->toBeTrue()
+        ->and($response->getSkipReason())->not->toBe('');
+})->with(array_keys(failureModes()));
+
+it('never throws when the API key was never configured', function (): void {
+    $client = new Client('', new ClientConfig(retryBaseDelayMs: 0), new FakeHttpClient());
+
+    $response = $client->checkSpamOrHam(new CheckSpamRequest('hello'));
+
+    expect($response->isSpam())->toBeFalse()
+        ->and($response->wasSkipped())->toBeTrue()
+        ->and($response->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_NOT_CONFIGURED)
+        ->and($response->getSkipReason())->toBe('not_configured')
+        ->and($response->getFailure())->toBeInstanceOf(\Spamtroll\Sdk\Exception\NotConfiguredException::class);
+});
+
+it('keeps the underlying failure for the caller to log', function (): void {
+    $http = fakeHttp()
+        ->queueException(TimeoutException::afterSeconds(3))
+        ->queueException(TimeoutException::afterSeconds(3));
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($response->getFailure())->toBeInstanceOf(TimeoutException::class)
+        ->and($response->error)->toContain('timed out')
+        ->and($response->getSkipReason())->toBe(CheckSpamResponse::SKIP_TRANSPORT_ERROR);
+});
+
+it('still returns a real verdict when the API answers', function (): void {
+    $http = fakeHttp()->queueJson(200, [
+        'success' => true,
+        'data' => ['status' => 'blocked', 'spam_score' => 21.5, 'submission_id' => 'sub-9'],
+    ]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('buy pills'));
+
+    expect($response->hasVerdict())->toBeTrue()
+        ->and($response->isSpam())->toBeTrue()
+        ->and($response->shouldBlock())->toBeTrue()
+        ->and($response->wasSkipped())->toBeFalse()
+        ->and($response->getSkipReason())->toBe('')
+        ->and($response->getSubmissionId())->toBe('sub-9');
+});
+
+it('reports quota exhaustion as a skip, not as a transport failure', function (): void {
+    $http = fakeHttp()->queueJson(402, [
+        'success' => false,
+        'error' => [
+            'code' => 'QUOTA_EXCEEDED',
+            'message' => 'Daily scan limit reached. Upgrade your plan at /dashboard/billing.',
+            'usage' => ['current' => 200, 'limit' => 200, 'plan' => 'free'],
+        ],
+    ]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($response->wasSkipped())->toBeTrue()
+        ->and($response->isQuotaExceeded())->toBeTrue()
+        ->and($response->getSkipReason())->toBe('quota_exceeded')
+        ->and($response->getFailure())->toBeNull()
+        ->and($response->getQuotaUsage())->toMatchArray(['current' => 200, 'limit' => 200]);
+});
+
+it('treats an unrecognised 402 code as a skip as well', function (): void {
+    // The skip decision follows the response class (402 = the backend
+    // declined to scan), not one hard-coded code string. A new billing code
+    // must not silently turn into "scan produced no symbols".
+    $http = fakeHttp()->queueJson(402, [
+        'success' => false,
+        'error' => ['code' => 'PLAN_DOWNGRADED', 'message' => 'Plan no longer covers scanning'],
+    ]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($response->wasSkipped())->toBeTrue()
+        ->and($response->isQuotaExceeded())->toBeFalse()
+        ->and($response->getSkipReason())->toBe('plan_downgraded');
+});
+
+it('scans content that is not valid UTF-8 instead of refusing it', function (): void {
+    // A single illegal byte used to make json_encode() fail, which threw and
+    // meant the content was never scanned at all — a bypass costing an
+    // attacker one byte.
+    $http = fakeHttp()->queueJson(200, ['success' => true, 'data' => ['status' => 'blocked', 'spam_score' => 20]]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest("caf\xE9 latin1 body", 'comment'));
+
+    expect($response->hasVerdict())->toBeTrue()
+        ->and($response->isSpam())->toBeTrue()
+        ->and($http->callCount())->toBe(1);
+
+    $body = $http->lastCall()['body'];
+    expect($body)->toBeString()
+        ->and(json_decode((string) $body, true))->toBeArray();
+});
+
+it('maps every failure onto the closed set of skip categories', function (string $mode): void {
+    // getSkipReason() is open by design — it carries the backend's own error
+    // code, and the backend adds codes whenever it likes. getSkipCategory()
+    // is the closed axis plugins can switch on and store in a narrow column.
+    // This asserts the set really is closed: no failure mode escapes it.
+    $closedSet = [
+        CheckSpamResponse::SKIP_CATEGORY_NOT_CONFIGURED,
+        CheckSpamResponse::SKIP_CATEGORY_AUTH,
+        CheckSpamResponse::SKIP_CATEGORY_QUOTA,
+        CheckSpamResponse::SKIP_CATEGORY_RATE_LIMIT,
+        CheckSpamResponse::SKIP_CATEGORY_REJECTED,
+        CheckSpamResponse::SKIP_CATEGORY_REDIRECTED,
+        CheckSpamResponse::SKIP_CATEGORY_TRANSPORT,
+        CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT,
+    ];
+
+    $http = fakeHttp();
+    failureModes()[$mode]($http);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('hello world', 'comment'));
+
+    expect($response->getSkipCategory())->toBeIn($closedSet);
+})->with(array_keys(failureModes()));
+
+it('sorts each kind of failure into the category a plugin would act on', function (): void {
+    // Each row below selects a different action in a host plugin: a different
+    // circuit-breaker kind, a different admin notice, or none at all. Two
+    // failures that want different handling must not share a category.
+    $request = new CheckSpamRequest('x');
+
+    $notConfigured = new Client('', new ClientConfig(retryBaseDelayMs: 0), new FakeHttpClient());
+
+    $auth401 = fakeHttp()->queueJson(401, ['success' => false, 'error' => ['code' => 'UNAUTHORIZED']]);
+    $auth403 = fakeHttp()->queueJson(403, ['success' => false, 'error' => ['code' => 'FORBIDDEN', 'message' => 'Account is blocked']]);
+    $quota = fakeHttp()->queueJson(402, ['success' => false, 'error' => ['code' => 'QUOTA_EXCEEDED']]);
+    $rateLimit = fakeHttp()->queueJson(429, ['error' => true, 'message' => 'Rate limit exceeded.']);
+    $rejected = fakeHttp()->queueJson(422, ['success' => false, 'error' => ['code' => 'VALIDATION_ERROR']]);
+    $transport = fakeHttp()
+        ->queueException(TimeoutException::afterSeconds(3))
+        ->queueException(TimeoutException::afterSeconds(3));
+    $noVerdict = fakeHttp()->queueResponse(200, '<html>Sign in to continue</html>');
+
+    expect($notConfigured->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_NOT_CONFIGURED)
+        ->and(makeClient($auth401)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_AUTH)
+        ->and(makeClient($auth403)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_AUTH)
+        ->and(makeClient($quota)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_QUOTA)
+        ->and(makeClient($rateLimit)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_RATE_LIMIT)
+        ->and(makeClient($rejected)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_REJECTED)
+        ->and(makeClient($transport)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_TRANSPORT)
+        ->and(makeClient($noVerdict)->checkSpamOrHam($request)->getSkipCategory())
+        ->toBe(CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT);
+});
+
+it('reports a redirect as its own category, for every 3xx', function (int $status): void {
+    // Reachable precisely because the SDK refuses to follow redirects: a 3xx
+    // is now a result the caller sees rather than something curl resolves on
+    // its own. Almost always a baseUrl that redirects http -> https or adds a
+    // trailing slash, which answers identically forever until someone edits
+    // the setting — so it is neither a transient outage nor a caller bug.
+    $http = fakeHttp()->queueResponse($status, '', ['location' => 'https://elsewhere.example/scan/check']);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($response->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_REDIRECTED)
+        ->and($response->getSkipReason())->toBe('http_' . $status)
+        ->and($response->isSpam())->toBeFalse()
+        ->and($http->callCount())->toBe(1);   // never retried: it will not change its mind
+})->with([301, 302, 303, 307, 308]);
+
+it('does not confuse a redirect with a captive portal', function (): void {
+    // Both mean "something is between us and the API", but they need
+    // different words in an admin notice: one is a URL the owner can fix,
+    // the other is a network the owner may not control.
+    $redirect = makeClient(fakeHttp()->queueResponse(302, '', ['location' => 'https://elsewhere.example/']))
+        ->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    $portal = makeClient(fakeHttp()->queueResponse(200, '<html>Sign in to continue</html>'))
+        ->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($redirect->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_REDIRECTED)
+        ->and($portal->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_NO_VERDICT)
+        ->and($redirect->getSkipCategory())->not->toBe($portal->getSkipCategory());
+});
+
+it('separates an unconfigured site from an unreachable API', function (): void {
+    // A site nobody has set up yet is not an outage. Sharing a category with
+    // transport failures trips a circuit breaker against a key that does not
+    // exist and warns the admin about a host they never had a problem with.
+    $notConfigured = (new Client('', new ClientConfig(retryBaseDelayMs: 0), new FakeHttpClient()))
+        ->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    $unreachable = makeClient(
+        fakeHttp()
+            ->queueException(ConnectionException::fromMessage('dns failure'))
+            ->queueException(ConnectionException::fromMessage('dns failure')),
+    )->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($notConfigured->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_NOT_CONFIGURED)
+        ->and($notConfigured->getSkipReason())->toBe('not_configured')
+        ->and($unreachable->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_TRANSPORT)
+        ->and($unreachable->getSkipReason())->toBe(CheckSpamResponse::SKIP_TRANSPORT_ERROR)
+        ->and($notConfigured->getSkipCategory())->not->toBe($unreachable->getSkipCategory());
+});
+
+it('separates a rejected key from an unreachable API', function (): void {
+    // 401 is not "no answer" — the server answered, decisively, and it stays
+    // answered until a human changes the key. Counting it as a transport
+    // strike wastes round-trips against a permanently dead credential.
+    $rejectedKey = makeClient(fakeHttp()->queueJson(401, ['success' => false, 'error' => ['code' => 'UNAUTHORIZED']]))
+        ->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($rejectedKey->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_AUTH)
+        ->and($rejectedKey->getSkipReason())->toBe('invalid_api_key')
+        ->and($rejectedKey->getFailure())->toBeInstanceOf(\Spamtroll\Sdk\Exception\AuthenticationException::class);
+});
+
+it('separates an operator problem from a caller bug', function (): void {
+    // 403 means the account is blocked or the platform is disabled: the site
+    // owner must act, loudly. 422 means we sent something malformed: the
+    // plugin's developer must act, quietly. One bucket would mishandle one.
+    $operator = makeClient(fakeHttp()->queueJson(403, ['success' => false, 'error' => [
+        'code' => 'FORBIDDEN', 'message' => 'Platform is disabled',
+    ]]))->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    $callerBug = makeClient(fakeHttp()->queueJson(422, ['success' => false, 'error' => [
+        'code' => 'VALIDATION_ERROR', 'message' => 'Content is required',
+    ]]))->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($operator->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_AUTH)
+        ->and($callerBug->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_REJECTED)
+        ->and($operator->getSkipCategory())->not->toBe($callerBug->getSkipCategory());
+});
+
+it('reports no category at all when there is a verdict', function (): void {
+    $http = fakeHttp()->queueJson(200, [
+        'success' => true,
+        'data' => ['status' => 'blocked', 'spam_score' => 20],
+    ]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('spam'));
+
+    expect($response->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_NONE)
+        ->and($response->getSkipCategory())->toBe('')
+        ->and($response->getSkipReason())->toBe('');
+});
+
+it('keeps a new backend error code inside an existing category', function (): void {
+    // The point of the closed axis: a code the SDK has never heard of still
+    // lands somewhere a plugin already handles, instead of forcing a sixth
+    // bucket into six separate dictionaries.
+    $http = fakeHttp()->queueJson(451, ['success' => false, 'error' => [
+        'code' => 'BLOCKED_FOR_LEGAL_REASONS',
+        'message' => 'Something invented after this SDK shipped',
+    ]]);
+
+    $response = makeClient($http)->checkSpamOrHam(new CheckSpamRequest('x'));
+
+    expect($response->getSkipCategory())->toBe(CheckSpamResponse::SKIP_CATEGORY_REJECTED)
+        ->and($response->getSkipReason())->toBe('blocked_for_legal_reasons')
+        ->and($response->isSpam())->toBeFalse();
+});

@@ -5,6 +5,12 @@ declare(strict_types=1);
 namespace Spamtroll\Sdk\Response;
 
 use Spamtroll\Sdk\ClientConfig;
+use Spamtroll\Sdk\Exception\AuthenticationException;
+use Spamtroll\Sdk\Exception\InvalidConfigurationException;
+use Spamtroll\Sdk\Exception\NotConfiguredException;
+use Spamtroll\Sdk\Exception\SpamtrollException;
+use Spamtroll\Sdk\Internal\ErrorEnvelope;
+use Throwable;
 
 final class CheckSpamResponse extends Response
 {
@@ -18,13 +24,113 @@ final class CheckSpamResponse extends Response
      */
     public const ERROR_QUOTA_EXCEEDED = 'QUOTA_EXCEEDED';
 
-    /** @var array<string, mixed> */
-    protected array $scanData;
+    /** getSkipReason() value when the SDK never reached a verdict because
+     *  the call itself failed (timeout, DNS, 5xx, bad key, no key).
+     */
+    public const SKIP_TRANSPORT_ERROR = 'transport_error';
+
+    /** getSkipReason() fallback for an HTTP 402 without a recognised code. */
+    public const SKIP_PAYMENT_REQUIRED = 'payment_required';
+
+    /** getSkipReason() fallback for an HTTP 429 without a recognised code. */
+    public const SKIP_RATE_LIMITED = 'rate_limited';
+
+    /** getSkipReason() value for a 2xx whose body carried no verdict. */
+    public const SKIP_UNPARSEABLE_RESPONSE = 'unparseable_response';
+
+    /*
+     * Skip categories: a CLOSED set, unlike getSkipReason().
+     *
+     * getSkipReason() is deliberately open — it carries the backend's own
+     * error code, and the backend may add codes at any time. That makes it
+     * right for a log line and wrong for a switch statement or a narrow
+     * database column. These categories are exhaustive and stable: every
+     * skipped response maps to exactly one, and new backend codes land in an
+     * existing bucket rather than inventing another category.
+     *
+     * The axis is cut by *what the caller should do*, not by how the failure
+     * happened to reach this class. Each value below selects a different
+     * action, and no two of them select the same one — that is the whole
+     * test of whether a category earns its place.
+     *
+     * Switch on the category, log the reason.
+     */
+
+    /** Has a verdict; nothing was skipped. */
+    public const SKIP_CATEGORY_NONE = '';
+
+    /**
+     * The site is not set up: no API key, or a base URL that cannot be used.
+     *
+     * Distinct from `transport` because there is nothing to retry, nothing to
+     * report and nothing wrong. Counting this against a circuit breaker opens
+     * it against a key that does not exist, and warning an admin that the API
+     * is unreachable sends them to their host over a field they simply have
+     * not filled in yet.
+     */
+    public const SKIP_CATEGORY_NOT_CONFIGURED = 'not_configured';
+
+    /**
+     * The backend knows who is calling and refuses: HTTP 401 (key rejected)
+     * or 403 (account blocked, platform disabled).
+     *
+     * Distinct from `transport` because the server answered, and answered
+     * decisively: this is permanent until a human acts. Retrying it wastes
+     * round-trips, and "cannot reach the API" is the wrong thing to tell an
+     * admin whose key was revoked. Distinct from `rejected` because the
+     * person who fixes it is the site owner, not the plugin's developer.
+     */
+    public const SKIP_CATEGORY_AUTH = 'auth';
+
+    /** The account is out of scans (HTTP 402). Actionable by the site owner. */
+    public const SKIP_CATEGORY_QUOTA = 'quota';
+
+    /** Too many requests (HTTP 429). Back off and try later. */
+    public const SKIP_CATEGORY_RATE_LIMIT = 'rate_limit';
+
+    /**
+     * The backend refused the request itself: 400, 404, 422 and friends.
+     * Almost always a bug in the caller, so it belongs in a developer log
+     * rather than in an admin notice.
+     */
+    public const SKIP_CATEGORY_REJECTED = 'rejected';
+
+    /** No answer at all: DNS, timeout, refused, 5xx after retries. */
+    public const SKIP_CATEGORY_TRANSPORT = 'transport';
+
+    /**
+     * The endpoint answered with a redirect (any 3xx).
+     *
+     * The SDK refuses to follow redirects — a redirect carries `X-API-Key` to
+     * whatever host `Location` names — so a 3xx is a result the caller sees
+     * rather than something that quietly resolves itself. It is its own
+     * category because it is the only failure that is both **persistent** and
+     * **fixable by the site owner**: nearly always a `baseUrl` that redirects
+     * (`http://` to `https://`, or a trailing-slash canonicalisation), and it
+     * will answer identically forever until someone edits the setting. Tell
+     * the admin to correct the URL; do not treat it as a transient outage,
+     * and do not keep retrying it.
+     */
+    public const SKIP_CATEGORY_REDIRECTED = 'redirected';
+
+    /** A 2xx that carried no classification — HTML, empty body, a proxy. */
+    public const SKIP_CATEGORY_NO_VERDICT = 'no_verdict';
+
+    /** Upper bound on any server-supplied symbol or category name. These
+     *  strings are rendered in moderation panels.
+     */
+    public const MAX_LABEL_LENGTH = 128;
 
     /** @var array<string, mixed> */
-    protected array $errorData;
+    private array $scanData;
 
-    protected float $scoreDenominator;
+    /** @var array<string, mixed> */
+    private array $errorData;
+
+    private float $scoreDenominator;
+
+    /** Transport failure that produced a fail-open response, if any. */
+    private ?Throwable $failure;
 
     /**
      * @param array<string, mixed> $data
@@ -35,10 +141,13 @@ final class CheckSpamResponse extends Response
         array $data = [],
         ?string $error = null,
         float $scoreDenominator = ClientConfig::DEFAULT_SCORE_DENOMINATOR,
+        ?string $errorCode = null,
+        ?Throwable $failure = null,
     ) {
-        parent::__construct($success, $httpCode, $data, $error);
+        parent::__construct($success, $httpCode, $data, $error, $errorCode);
 
         $this->scoreDenominator = $scoreDenominator > 0 ? $scoreDenominator : ClientConfig::DEFAULT_SCORE_DENOMINATOR;
+        $this->failure = $failure;
 
         // API envelope: {success: true, data: {...}}. Unwrap `data` when the
         // envelope explicitly marks the call successful; otherwise fall back
@@ -55,54 +164,226 @@ final class CheckSpamResponse extends Response
         $this->errorData = isset($data['error']) && is_array($data['error']) ? $data['error'] : [];
     }
 
+    /**
+     * The response every failure collapses into: no verdict, nothing blocked,
+     * the original throwable kept for the caller's log.
+     *
+     * This is what makes fail-open a property of the SDK rather than a rule
+     * six separate integrations have to remember. Only a successful scan can
+     * ever produce a blocking verdict.
+     */
+    public static function failOpen(
+        Throwable $failure,
+        float $scoreDenominator = ClientConfig::DEFAULT_SCORE_DENOMINATOR,
+    ): self {
+        return new self(
+            success: false,
+            httpCode: 0,
+            data: [],
+            error: ErrorEnvelope::truncate($failure->getMessage()),
+            scoreDenominator: $scoreDenominator,
+            errorCode: self::errorCodeOf($failure),
+            failure: $failure,
+        );
+    }
+
+    /**
+     * True when the backend actually classified the content. False for every
+     * failure mode: transport error, quota exhaustion, rate limiting, a 4xx,
+     * or a body the SDK could not parse.
+     *
+     * The three predicates below are derived from this, so a plugin can act
+     * on the verdict without re-deriving one from the score.
+     */
+    public function hasVerdict(): bool
+    {
+        return $this->success
+            && $this->failure === null
+            && isset($this->scanData['status'])
+            && is_string($this->scanData['status']);
+    }
+
+    /**
+     * Server verdict: `blocked`, `suspicious` or `safe`.
+     *
+     * The server owns this decision — it applies the platform's configured
+     * thresholds, which the SDK does not know. Branch on this, not on
+     * getSpamScore(); the score is for display and tie-breaking.
+     *
+     * Falls back to `safe` whenever there is no verdict, which is the
+     * fail-open default.
+     */
+    public function getStatus(): string
+    {
+        if (!$this->hasVerdict()) {
+            return self::STATUS_SAFE;
+        }
+
+        /** @var string $status */
+        $status = $this->scanData['status'];
+
+        return $status;
+    }
+
+    public function isBlocked(): bool
+    {
+        return $this->getStatus() === self::STATUS_BLOCKED;
+    }
+
+    public function isSuspicious(): bool
+    {
+        return $this->getStatus() === self::STATUS_SUSPICIOUS;
+    }
+
+    public function isSafe(): bool
+    {
+        return $this->getStatus() === self::STATUS_SAFE;
+    }
+
+    /** Alias of isBlocked(), kept because plugins read better with it. */
     public function isSpam(): bool
     {
-        // A quota-exceeded response is NOT spam — even though success=false,
-        // the plugin should let the message through (fail-open contract).
-        if ($this->wasSkipped()) {
-            return false;
+        return $this->isBlocked();
+    }
+
+    /** Block the content outright. True only for an explicit `blocked` verdict. */
+    public function shouldBlock(): bool
+    {
+        return $this->isBlocked();
+    }
+
+    /** Hold the content for a human. True only for an explicit `suspicious` verdict. */
+    public function shouldModerate(): bool
+    {
+        return $this->isSuspicious();
+    }
+
+    /**
+     * True whenever no verdict was reached and the caller must fail open:
+     * the transport failed, the backend refused to scan (402, 429, any 4xx),
+     * or the body carried no classification at all.
+     *
+     * The exact inverse of hasVerdict(), deliberately — every branch that is
+     * not "the server classified this content" ends in the same place.
+     */
+    public function wasSkipped(): bool
+    {
+        return !$this->hasVerdict();
+    }
+
+    /**
+     * Machine-readable reason wasSkipped() is true; empty string otherwise.
+     * Safe to log verbatim into a plugin's "skipped scans" table.
+     */
+    public function getSkipReason(): string
+    {
+        if ($this->hasVerdict()) {
+            return '';
         }
-        return $this->success && $this->getStatus() === self::STATUS_BLOCKED;
+
+        if ($this->failure !== null) {
+            // The SDK's own failures carry a code (NOT_CONFIGURED,
+            // INVALID_API_KEY, INVALID_CONFIGURATION), and so does a 5xx that
+            // exhausted its retries. Prefer it: "transport_error" for a
+            // rejected key is a log line that sends someone to the wrong
+            // place. Falls back for DNS, timeouts and refused connections,
+            // which genuinely have nothing more specific to say.
+            $failureCode = $this->getErrorCode();
+
+            return $failureCode === null || $failureCode === ''
+                ? self::SKIP_TRANSPORT_ERROR
+                : strtolower($failureCode);
+        }
+
+        $code = $this->getErrorCode();
+        $code = $code === null ? '' : strtolower($code);
+
+        if ($this->httpCode === 402) {
+            return $code === '' ? self::SKIP_PAYMENT_REQUIRED : $code;
+        }
+        if ($this->httpCode === 429) {
+            return $code === '' ? self::SKIP_RATE_LIMITED : $code;
+        }
+        if ($this->httpCode < 200 || $this->httpCode >= 300) {
+            return $code === '' ? 'http_' . $this->httpCode : $code;
+        }
+
+        // 2xx that carried no `status` — an HTML error page, an empty body,
+        // a proxy answering on the API's behalf.
+        return self::SKIP_UNPARSEABLE_RESPONSE;
+    }
+
+    /**
+     * Which of the five closed skip categories this response falls into;
+     * SKIP_CATEGORY_NONE when a verdict was reached.
+     *
+     * Use this for control flow and for anything you persist. Six
+     * integrations each inventing their own enum over getSkipReason() is
+     * six dictionaries that drift; this is the shared one.
+     */
+    public function getSkipCategory(): string
+    {
+        if ($this->hasVerdict()) {
+            return self::SKIP_CATEGORY_NONE;
+        }
+
+        // A throwing failure is classified by *which* exception it is, not by
+        // the fact that it threw. Whether dispatch() throws is an internal
+        // detail; the exception hierarchy is the documented taxonomy, and it
+        // already separates "not set up" and "refused" from "no answer".
+        if ($this->failure !== null) {
+            if ($this->failure instanceof NotConfiguredException
+                || $this->failure instanceof InvalidConfigurationException) {
+                return self::SKIP_CATEGORY_NOT_CONFIGURED;
+            }
+            if ($this->failure instanceof AuthenticationException) {
+                return self::SKIP_CATEGORY_AUTH;
+            }
+
+            return self::SKIP_CATEGORY_TRANSPORT;
+        }
+
+        if ($this->httpCode === 402) {
+            return self::SKIP_CATEGORY_QUOTA;
+        }
+        if ($this->httpCode === 429) {
+            return self::SKIP_CATEGORY_RATE_LIMIT;
+        }
+        // 401 always arrives as an AuthenticationException, handled above; it
+        // is listed here so a response built directly from a 401 body — which
+        // plugin test suites do — lands in the same place.
+        if ($this->httpCode === 401 || $this->httpCode === 403) {
+            return self::SKIP_CATEGORY_AUTH;
+        }
+        // Reachable precisely because the SDK does not follow redirects.
+        if ($this->httpCode >= 300 && $this->httpCode < 400) {
+            return self::SKIP_CATEGORY_REDIRECTED;
+        }
+        if ($this->httpCode >= 400 && $this->httpCode < 500) {
+            return self::SKIP_CATEGORY_REJECTED;
+        }
+
+        // 5xx only reaches here as a $failure, so what is left is a 2xx whose
+        // body carried no classification.
+        return self::SKIP_CATEGORY_NO_VERDICT;
+    }
+
+    /**
+     * The throwable behind a fail-open response, for the caller's log. Null
+     * when the round-trip itself succeeded.
+     */
+    public function getFailure(): ?Throwable
+    {
+        return $this->failure;
     }
 
     /**
      * True when the backend rejected the scan because the user's daily
      * quota was exhausted (HTTP 402, error.code = QUOTA_EXCEEDED).
-     * Plugins MUST check this before treating !success as a transport
-     * error — quota exhaustion is a normal operational state, not an
-     * error to retry.
      */
     public function isQuotaExceeded(): bool
     {
-        if ($this->httpCode !== 402) {
-            return false;
-        }
-        $code = $this->errorData['code'] ?? null;
-        return is_string($code) && $code === self::ERROR_QUOTA_EXCEEDED;
-    }
-
-    /**
-     * True when the SDK could not produce a verdict and the plugin
-     * should fail open (allow the content through unscanned). Today
-     * this is just a synonym for isQuotaExceeded(); future SDK
-     * versions may extend it (e.g. a "PLAN_DOWNGRADED" code).
-     */
-    public function wasSkipped(): bool
-    {
-        return $this->isQuotaExceeded();
-    }
-
-    /**
-     * Machine-readable reason wasSkipped() is true. Empty string when
-     * !wasSkipped(). Plugins can log this verbatim into their local
-     * "skipped scans" table.
-     */
-    public function getSkipReason(): string
-    {
-        if ($this->isQuotaExceeded()) {
-            return 'quota_exceeded';
-        }
-        return '';
+        return $this->httpCode === 402 && $this->getErrorCode() === self::ERROR_QUOTA_EXCEEDED;
     }
 
     /**
@@ -116,14 +397,8 @@ final class CheckSpamResponse extends Response
     public function getQuotaUsage(): array
     {
         $usage = $this->errorData['usage'] ?? null;
-        return is_array($usage) ? $usage : [];
-    }
 
-    public function getStatus(): string
-    {
-        return isset($this->scanData['status']) && is_string($this->scanData['status'])
-            ? $this->scanData['status']
-            : self::STATUS_SAFE;
+        return is_array($usage) ? $usage : [];
     }
 
     /**
@@ -132,8 +407,10 @@ final class CheckSpamResponse extends Response
      * Backend uses an open-ended additive scale where the configured spam
      * threshold (default 15) means "definitely spam". Mapping raw/denominator
      * and clamping to 1.0 preserves signal between borderline spam (0.5) and
-     * high-confidence spam (1.0) instead of collapsing everything ≥ threshold
+     * high-confidence spam (1.0) instead of collapsing everything >= threshold
      * into a single bucket.
+     *
+     * Display value. The blocking decision belongs to getStatus().
      */
     public function getSpamScore(): float
     {
@@ -141,14 +418,19 @@ final class CheckSpamResponse extends Response
         if ($raw <= 0.0) {
             return 0.0;
         }
+
         return min(1.0, $raw / $this->scoreDenominator);
     }
 
     public function getRawSpamScore(): float
     {
+        if (!$this->success || $this->failure !== null) {
+            return 0.0;
+        }
         if (!isset($this->scanData['spam_score']) || !is_numeric($this->scanData['spam_score'])) {
             return 0.0;
         }
+
         return (float) $this->scanData['spam_score'];
     }
 
@@ -157,18 +439,17 @@ final class CheckSpamResponse extends Response
      */
     public function getSymbols(): array
     {
-        $symbols = $this->scanData['symbols'] ?? [];
-        if (!is_array($symbols)) {
-            return [];
-        }
         return array_values(array_map(
-            static function ($s): string {
-                if (is_array($s)) {
-                    return isset($s['name']) && is_scalar($s['name']) ? (string) $s['name'] : '';
+            static function (mixed $symbol): string {
+                if (is_array($symbol)) {
+                    $name = $symbol['name'] ?? null;
+
+                    return is_scalar($name) ? ErrorEnvelope::truncate((string) $name, self::MAX_LABEL_LENGTH) : '';
                 }
-                return is_scalar($s) ? (string) $s : '';
+
+                return is_scalar($symbol) ? ErrorEnvelope::truncate((string) $symbol, self::MAX_LABEL_LENGTH) : '';
             },
-            $symbols,
+            $this->rawSymbols(),
         ));
     }
 
@@ -177,8 +458,7 @@ final class CheckSpamResponse extends Response
      */
     public function getSymbolDetails(): array
     {
-        $symbols = $this->scanData['symbols'] ?? [];
-        return is_array($symbols) ? array_values($symbols) : [];
+        return $this->rawSymbols();
     }
 
     /**
@@ -186,20 +466,52 @@ final class CheckSpamResponse extends Response
      */
     public function getThreatCategories(): array
     {
-        $cats = $this->scanData['threat_categories'] ?? [];
-        if (!is_array($cats)) {
+        if (!$this->success) {
             return [];
         }
+        $categories = $this->scanData['threat_categories'] ?? [];
+        if (!is_array($categories)) {
+            return [];
+        }
+
         return array_values(array_map(
-            static fn ($c): string => is_scalar($c) ? (string) $c : '',
-            $cats,
+            static fn (mixed $category): string => is_scalar($category)
+                ? ErrorEnvelope::truncate((string) $category, self::MAX_LABEL_LENGTH)
+                : '',
+            $categories,
         ));
     }
 
+    /**
+     * UUID of the stored submission, needed to send moderator feedback.
+     *
+     * Null when the backend could not persist the submission — the scan
+     * still returns 200, `submission_id` is simply absent.
+     */
     public function getSubmissionId(): ?string
     {
         return isset($this->scanData['submission_id']) && is_scalar($this->scanData['submission_id'])
             ? (string) $this->scanData['submission_id']
+            : null;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function rawSymbols(): array
+    {
+        if (!$this->success) {
+            return [];
+        }
+        $symbols = $this->scanData['symbols'] ?? [];
+
+        return is_array($symbols) ? array_values($symbols) : [];
+    }
+
+    private static function errorCodeOf(Throwable $failure): ?string
+    {
+        return $failure instanceof SpamtrollException
+            ? $failure->apiErrorCode
             : null;
     }
 }

@@ -1,5 +1,6 @@
 parameters:
     level: 9
+    phpVersion: 80200
     paths:
         - src
     # tests/ is excluded — Pest's `it()`/`expect()`/`arch()` DSL needs a

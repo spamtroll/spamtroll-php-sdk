@@ -9,6 +9,15 @@
 
 declare(strict_types=1);
 
+// Composer refuses to install the SDK on an unsupported PHP; a bundled copy
+// has no such gate. Fail with a sentence someone can act on instead of a
+// parse error from src/ on the first autoloaded class.
+if (PHP_VERSION_ID < 80200) {
+    throw new RuntimeException(
+        'spamtroll/php-sdk requires PHP 8.2 or newer; this server runs ' . PHP_VERSION
+    );
+}
+
 (static function (): void {
     $prefix = 'Spamtroll\\Sdk\\';
     $baseDir = __DIR__ . '/src/';
