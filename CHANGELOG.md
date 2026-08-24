@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-24
+
+This release makes fail-open a property of the SDK instead of a rule six
+plugins had to remember, and removes a method that never worked. It is a
+`0.x` minor, which SemVer allows to break compatibility — see
+[UPGRADE.md](UPGRADE.md) for the migration, and read it before bumping
+the constraint in a plugin.
+
+### Added
+
+- **`Client::checkSpamOrHam()` — the method integrations should call.** It
+  never throws. Every failure (no API key, DNS, timeout, HTTP 401, 5xx
+  after retries, quota exhausted, an adapter leaking a foreign exception
+  or an `Error`, a 2xx carrying HTML) returns a `CheckSpamResponse` with
+  `wasSkipped() === true` and `shouldBlock() === false`. A blocking
+  verdict can only originate from a successful scan.
+- `CheckSpamResponse::failOpen()`, `getFailure()`, `hasVerdict()`,
+  `isBlocked()`, `isSuspicious()`, `isSafe()`, `shouldBlock()`,
+  `shouldModerate()`. The server's `status` is now the primary value;
+  four plugins had been re-deriving a verdict from the normalised score
+  with their own hard-coded cut-offs because `status` was awkward to
+  reach.
+- `Response::$errorCode` / `getErrorCode()` — the backend's machine code
+  (`QUOTA_EXCEEDED`, `VALIDATION_ERROR`, `FORBIDDEN`, …) so plugins can
+  branch on something other than prose.
+- `ClientConfig::$totalBudgetMs` (default `6000`) — a ceiling on the whole
+  call, retries and backoff included. `timeout × maxRetries` never was one.
+- `CheckSpamRequest`: `SOURCE_EMAIL` (switches the backend to the e-mail
+  RETVec model — mail integrations were silently getting the web model),
+  `SOURCE_CONTACT_FORM`, `$rawMessage` (enables real cryptographic DKIM
+  verification instead of the forgeable header-only fallback), `$headers`,
+  `isContentTruncated()`.
+- `Exception\InvalidConfigurationException` for a `baseUrl` that is not
+  http(s). Extends `SpamtrollException`, so an existing single catch
+  covers it.
+- `dev/prove-regression.sh` — runs the suite against `src/` at a base ref
+  and fails if it stays green.
+- `tests/FailOpenContractTest.php` — sixteen failure modes, each asserted
+  not to throw, block or moderate.
+
+### Changed
+
+- **BREAKING: minimum PHP raised from 8.0 to 8.2.** 8.0 and 8.1 are past
+  end of security support. Installs on older PHP stay on 0.9.x.
+  `autoload.php` now refuses to register below 8.2 with a readable
+  message, which is the only protection plugins bundling the SDK without
+  Composer have. `ext-mbstring` is now a declared requirement.
+- **BREAKING: `wasSkipped()` is the exact inverse of `hasVerdict()`.** It
+  used to mean "HTTP 402" and nothing else. It now covers every
+  no-verdict branch — transport failure, 402, 429, any 4xx, and a 2xx
+  whose body carried no classification. `getSkipReason()` gained the
+  values `transport_error`, `rate_limited`, `payment_required`,
+  `unparseable_response`, `http_<code>` and any lower-cased backend error
+  code.
+- **BREAKING: `getStatus()` returns `safe` whenever there is no verdict**,
+  where it previously read `data.status` from an unsuccessful response.
+  `getSpamScore()` / `getRawSpamScore()` return `0.0` in the same case.
+- **BREAKING: interactive defaults lowered** — `timeout` 5 → 3,
+  `maxRetries` 3 → 2, `retryBaseDelayMs` 500 → 250. Worst-case blocking
+  time drops from 16.5 s to ~6.25 s. The old values remain documented as
+  the background-worker preset.
+- **BREAKING: `ClientConfig`, `Response`, `HttpResponse` and
+  `CheckSpamRequest` properties are `readonly`.** `docs/CONFIGURATION.md`
+  has described `ClientConfig` as immutable since 0.9.0 without it being
+  true.
+- **BREAKING: `baseUrl` must be `http` or `https`.** It is an
+  admin-editable field in every integration, and without the check
+  `file:///etc/passwd` was a request the SDK would perform, with the
+  file's contents landing in `$response->data` and in plugin logs.
+- A POST that receives a 5xx is retried **once**, regardless of
+  `maxRetries`. The backend charges the daily scan quota before running
+  the scan, so three attempts billed a customer three scans for one failed
+  scan during an outage they did not cause.
+- Every POST carries an `Idempotency-Key`, generated once per call and
+  reused across that call's retries.
+- The 8.0/8.1 CI legs are gone, along with the PHPUnit fallback they
+  forced. Those legs never executed a single assertion: the tests are Pest
+  DSL with no test classes, and `config.platform.php = 8.3` plus
+  `--ignore-platform-req=php` meant they were not measuring 8.0
+  compatibility either. Matrix is now 8.2/8.3/8.4, php-cs-fixer targets
+  `@PHP82Migration`, PHPStan pins `phpVersion: 80200`, and peck runs
+  advisory.
+
+### Fixed
+
+- **`$response->error` was `"1"` for every rate-limited request.** The HTTP
+  rate limiter and the framework's error handler answer with
+  `{"error": true, "message": "…"}`, and `(string) true` is `"1"`. The
+  standard `{"error": {code, message, request_id}}` envelope fared no
+  better: the whole object was JSON-encoded into the field. All three
+  shapes are now parsed properly.
+- **`getRequestId()` returned `null` 100% of the time.** The backend puts
+  the identifier in `error.request_id`, never at the top level.
+  `getMessage()` had the mirror-image bug.
+- Content that is not valid UTF-8 no longer throws. `json_encode()`
+  returning `false` meant such content was **never scanned** — a filter
+  bypass costing an attacker one illegal byte. It is now encoded with
+  `JSON_INVALID_UTF8_SUBSTITUTE`.
+- An adapter reporting a status below 100 is treated as a transport
+  failure and retried, instead of being reported as "the server said no".
+- `CurlHttpClient` restricts protocols to http/https, caps the response
+  body, and throws when curl succeeds without an HTTP status line.
+- Server-supplied strings are truncated before they reach host logs and
+  moderation panels (512 characters for error text, 128 for symbol and
+  category names).
+- `content` is truncated to the 64 KiB the backend is willing to scan.
+  Padding a post past the scan timeout was a deterministic way to force a
+  fail-open.
+- The reference HTTP adapters in `docs/HTTP_ADAPTERS.md` followed
+  redirects, carrying `X-API-Key` to whatever host a `Location` header
+  named. All three are fixed, and "never follow redirects" is now a
+  mandatory rule of `HttpClientInterface`.
+
+### Removed
+
+- **BREAKING: `Client::getAccountUsage()` and `Response\UsageResponse`.**
+  They called `GET /account/usage`, which the backend does not have and
+  never had — the only usage endpoint is `/api/v1/billing/usage`, behind a
+  JWT and therefore unreachable with an API key. The call 404'd, was
+  classified as "some other 4xx", and `UsageResponse` reported `0` for all
+  three fields with no error anywhere. The existing test passed because
+  `FakeHttpClient` returned a payload the real server never sends. Quota
+  information is available from a 402 response through `getQuotaUsage()`.
+
+
 ## [0.9.3] - 2026-04-26
 
 ### Added
