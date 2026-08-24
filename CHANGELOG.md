@@ -42,6 +42,13 @@ the constraint in a plugin.
 - `Exception\InvalidConfigurationException` for a `baseUrl` that is not
   http(s). Extends `SpamtrollException`, so an existing single catch
   covers it.
+- `Client::submitFeedback()` / `trySubmitFeedback()` and
+  `Request\FeedbackRequest`, covering `POST /scan/feedback`. This is the
+  only route by which a moderator's correction reaches the model, and a
+  `spam` label also trains the platform's Bayes classifier —
+  `getSubmissionId()` had been returning an identifier with nothing to do
+  with it. `trySubmitFeedback()` never throws, because failing to record
+  a correction must not break the moderation screen.
 - `dev/prove-regression.sh` — runs the suite against `src/` at a base ref
   and fails if it stays green.
 - `tests/FailOpenContractTest.php` — sixteen failure modes, each asserted

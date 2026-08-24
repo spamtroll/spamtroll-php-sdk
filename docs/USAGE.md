@@ -88,6 +88,8 @@ and reference implementations.
 |---|---|---|
 | `checkSpamOrHam(CheckSpamRequest)` | `CheckSpamResponse` | **The method integrations should call.** Submits content to `/scan/check` and never throws; every failure becomes a skipped, non-blocking response. |
 | `checkSpam(CheckSpamRequest)` | `CheckSpamResponse` | Same call, but throws on anything that prevents a verdict. Wrap it in `try/catch (\Throwable)`. |
+| `trySubmitFeedback(FeedbackRequest)` | `Response` | Sends a moderator's correction to `/scan/feedback`. Never throws. |
+| `submitFeedback(FeedbackRequest)` | `Response` | Same call, throwing variant. |
 | `testConnection()` | `Response` | Hits `/scan/status` with a GET. For admin "Test Connection" buttons. Throws — an invalid key must be reported, not swallowed, so wrap it. |
 | `isConfigured()` | `bool` | True if the API key is non-empty. Cheap, no network. |
 | `getConfig()` | `ClientConfig` | The active configuration object. |
@@ -124,6 +126,38 @@ a 402 response, available through `getQuotaUsage()`.
 `CheckSpamRequest::toArray()` returns the canonical wire format —
 `content`, `source`, plus any non-empty optional fields. Empty optional
 fields are *omitted*, not sent as empty strings.
+
+## Moderator feedback
+
+When a human overrules a verdict, tell the backend. This is the only
+route by which a wrong classification is corrected, and a `spam` label
+also trains the platform's Bayes classifier.
+
+```php
+use Spamtroll\Sdk\Request\FeedbackRequest;
+
+// $submissionId came from CheckSpamResponse::getSubmissionId().
+$result = $client->trySubmitFeedback(
+    FeedbackRequest::spam($submissionId, 'moderator marked as spam'),
+);
+
+if (!$result->success) {
+    error_log('spamtroll: feedback not recorded — ' . ($result->error ?? ''));
+}
+```
+
+`getSubmissionId()` can be `null`: the field is `omitempty`, and the
+backend still answers 200 when it could not persist the submission.
+Store it when it is there, and hide the "report" button when it is not.
+
+Backend limits worth knowing before you wire this to a bulk action:
+
+| Limit | Value | Response |
+|---|---|---|
+| Rate limiter | 20 requests/minute per API key | 429 |
+| Daily quota | 100 corrections per platform per day | 429, `error.code = RATE_LIMITED` |
+| Unknown submission, or one owned by another platform | — | **404**, not 403 |
+| `correct_label` other than `spam` / `ham` | — | 422 |
 
 ## Reading the response
 

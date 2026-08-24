@@ -14,6 +14,7 @@ use Spamtroll\Sdk\Http\CurlHttpClient;
 use Spamtroll\Sdk\Http\HttpClientInterface;
 use Spamtroll\Sdk\Internal\ErrorEnvelope;
 use Spamtroll\Sdk\Request\CheckSpamRequest;
+use Spamtroll\Sdk\Request\FeedbackRequest;
 use Spamtroll\Sdk\Response\CheckSpamResponse;
 use Spamtroll\Sdk\Response\Response;
 use Throwable;
@@ -104,6 +105,52 @@ final class Client
         );
 
         return new CheckSpamResponse($success, $code, $decoded, $error, $this->config->scoreDenominator, $errorCode);
+    }
+
+    /**
+     * Send a moderator's correction back to the backend, and never throw.
+     *
+     * Feedback runs from a moderation UI, not from the scan path, but the
+     * same reasoning applies: failing to record a correction must not break
+     * the screen the moderator is looking at. Check `success` (and
+     * `getErrorCode()`) if you want to tell them it did not land.
+     */
+    public function trySubmitFeedback(FeedbackRequest $request): Response
+    {
+        try {
+            return $this->submitFeedback($request);
+        } catch (Throwable $e) {
+            return new Response(
+                false,
+                0,
+                [],
+                ErrorEnvelope::truncate($e->getMessage()),
+                $e instanceof SpamtrollException ? $e->apiErrorCode : null,
+            );
+        }
+    }
+
+    /**
+     * Send a moderator's correction back to the backend.
+     *
+     * This is the only route by which a wrong verdict is corrected and the
+     * model retrained; `CheckSpamResponse::getSubmissionId()` supplies the
+     * identifier. Note the limits the backend applies: 20 requests per
+     * minute per API key, and 100 corrections per platform per day, both
+     * answered with 429.
+     * A submission belonging to another platform comes back as 404, not 403.
+     *
+     * @throws SpamtrollException
+     */
+    public function submitFeedback(FeedbackRequest $request): Response
+    {
+        [$success, $code, $decoded, $error, $errorCode] = $this->dispatch(
+            'POST',
+            '/scan/feedback',
+            $request->toArray(),
+        );
+
+        return new Response($success, $code, $decoded, $error, $errorCode);
     }
 
     /**
