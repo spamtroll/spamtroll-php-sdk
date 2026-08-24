@@ -81,8 +81,9 @@ outcome triggered by a remote party.
 
 Used when `Client` is constructed without an adapter. Built directly on
 ext-curl, no third-party deps. Sets `CURLOPT_SSL_VERIFYPEER=true`,
-`CURLOPT_FOLLOWLOCATION=false`, restricts `CURLOPT_PROTOCOLS` to
-http+https, caps the body with `CURLOPT_MAXFILESIZE`, and maps
+`CURLOPT_FOLLOWLOCATION=false`, restricts the protocol allow-list to
+http+https where the build supports it, caps the body with
+`CURLOPT_MAXFILESIZE`, and maps
 `CURLE_OPERATION_TIMEOUTED` to `TimeoutException`, every other curl error
 to `ConnectionException`.
 
@@ -246,6 +247,30 @@ final class GuzzleHttpAdapter implements \Spamtroll\Sdk\Http\HttpClientInterface
     }
 }
 ```
+
+### A note on the protocol allow-list
+
+`CurlHttpClient` asks for the allow-list through
+`CURLOPT_PROTOCOLS_STR` / `CURLOPT_REDIR_PROTOCOLS_STR`, falling back to the
+deprecated integer pair, and asking for neither when the build has neither.
+Those string options arrived in **libcurl 7.85.0** and php-src registers
+them behind a `LIBCURL_VERSION_NUM` guard, so whether they exist depends on
+the libcurl your curl extension was *built* against — not on your PHP
+version. Plenty of current distributions, GitHub's Linux runner among them,
+ship a PHP 8.2+ with an older libcurl.
+
+Two things follow, and both apply to your adapter as much as to ours:
+
+1. **Never name a version-gated curl constant directly.** In PHP 8 a missing
+   constant raises `Error`, not `Exception` — it goes straight past
+   `catch (\Exception)` and it fires while the request is being built, before
+   any fail-open path exists. Probe with `defined()` and resolve with
+   `constant()`.
+2. **Do not let the allow-list carry the guarantee on its own.** It is the
+   third line: `ClientConfig` refuses a non-http(s) `baseUrl`, and refusing
+   redirects means the transport only ever visits the URL it was handed.
+   Those two are unconditional, so a build without the allow-list is
+   protected by exactly the same rules as one with it.
 
 ## Response headers
 

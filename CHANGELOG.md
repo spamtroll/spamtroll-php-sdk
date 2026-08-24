@@ -126,7 +126,16 @@ the constraint in a plugin.
 - An adapter reporting a status below 100 is treated as a transport
   failure and retried, instead of being reported as "the server said no".
 - `CurlHttpClient` restricts protocols to http/https, caps the response
-  body, and throws when curl succeeds without an HTTP status line.
+  body, and throws when curl succeeds without an HTTP status line. The
+  allow-list is requested by option *name*: `CURLOPT_PROTOCOLS_STR` and
+  `CURLOPT_REDIR_PROTOCOLS_STR` arrived in libcurl 7.85.0 and php-src gates
+  them on the libcurl the extension was built against, so on an older build
+  (GitHub's Linux runner, for one) a bare reference is an `Error` — the one
+  kind of throwable a fail-open `catch` does not stop. The SDK now probes
+  with `defined()`, prefers the modern pair, falls back to the deprecated
+  integer pair, and asks for no allow-list at all rather than crashing.
+  TLS verification and `CURLOPT_FOLLOWLOCATION => false` are unconditional
+  on every build, so the guarantee does not depend on libcurl's version.
 - Server-supplied strings are truncated before they reach host logs and
   moderation panels (512 characters for error text, 128 for symbol and
   category names).
