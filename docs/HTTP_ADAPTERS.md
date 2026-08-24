@@ -77,6 +77,31 @@ out-of-memory `Error` is not catchable, so a captive portal streaming
 megabytes takes the whole host request down with it — a fail-closed
 outcome triggered by a remote party.
 
+### Rule 3 has two halves — do both
+
+Turning redirects off changes what your adapter sees, so the disable and
+the handling have to land together:
+
+1. **Disable redirect-following explicitly.** Every stack here follows
+   redirects by default — WordPress five hops, IPS five, Guzzle five — so
+   "my adapter does not follow redirects" is only true if you said so.
+   `'redirection' => 0`, `request($timeout, null, 0)`,
+   `'allow_redirects' => false`.
+2. **Return the 3xx as an ordinary `HttpResponse`.** It is a real answer
+   from a real server, so rule 2 applies: do not throw.
+
+Doing only (2) gives you an adapter that never sees a 3xx, because the
+redirect was already followed and the key already left. Doing only (1)
+gives you an adapter that reports a redirect as a connection failure, so
+the SDK retries it and the site owner is told their network is broken
+when their URL is simply wrong.
+
+With both in place the SDK reports `getSkipCategory() === 'redirected'`.
+That almost always means the configured `baseUrl` redirects — `http://`
+where `https://` was meant, or a trailing-slash canonicalisation — which
+is a setting the site owner can correct, not a network error to wait out.
+It will also answer identically forever, so do not retry it.
+
 ## Default — `CurlHttpClient`
 
 Used when `Client` is constructed without an adapter. Built directly on
