@@ -1,0 +1,32 @@
+name: Dependency security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '10 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Composer advisory audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: curl, json, mbstring, gd
+          coverage: none
+          tools: composer:v2
+      - name: Resolve current supported dependencies
+        # Audit dev tools too, without installing or executing package code.
+        run: composer update --no-install --no-scripts --no-plugins --prefer-dist --no-interaction --no-progress
+      - name: Audit resolved dependencies
+        run: composer audit --locked --no-interaction
