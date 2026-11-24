@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Client::checkBatchOrHam()` and `checkBatch()` for `POST /scan/batch`,
+  with `Request\BatchCheckRequest` (1 to 100 items) and
+  `Response\BatchCheckResponse`. `getResults()` has one `CheckSpamResponse`
+  for each item, in the same order. If the call fails, or the backend could
+  not scan an item, the result is skipped and never blocks, like
+  `checkSpamOrHam()`.
+
 ## [0.10.0] - 2026-08-24
 
 This release makes fail-open a property of the SDK instead of a rule six

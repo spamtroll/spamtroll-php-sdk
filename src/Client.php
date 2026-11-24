@@ -13,8 +13,10 @@ use Spamtroll\Sdk\Exception\SpamtrollException;
 use Spamtroll\Sdk\Http\CurlHttpClient;
 use Spamtroll\Sdk\Http\HttpClientInterface;
 use Spamtroll\Sdk\Internal\ErrorEnvelope;
+use Spamtroll\Sdk\Request\BatchCheckRequest;
 use Spamtroll\Sdk\Request\CheckSpamRequest;
 use Spamtroll\Sdk\Request\FeedbackRequest;
+use Spamtroll\Sdk\Response\BatchCheckResponse;
 use Spamtroll\Sdk\Response\CheckSpamResponse;
 use Spamtroll\Sdk\Response\Response;
 use Throwable;
@@ -105,6 +107,52 @@ final class Client
         );
 
         return new CheckSpamResponse($success, $code, $decoded, $error, $this->config->scoreDenominator, $errorCode);
+    }
+
+    /**
+     * Scan several items in one call and never throw.
+     *
+     * The result has one CheckSpamResponse for every item, in the same order.
+     * Every failure, for the whole call or for a single item, comes back as a
+     * skipped result that does not block anything. See BatchCheckResponse.
+     */
+    public function checkBatchOrHam(BatchCheckRequest $request): BatchCheckResponse
+    {
+        try {
+            return $this->checkBatch($request);
+        } catch (Throwable $e) {
+            return BatchCheckResponse::failOpen($e, count($request->items), $this->config->scoreDenominator);
+        }
+    }
+
+    /**
+     * Scan several items in one call (POST /scan/batch), throwing on anything
+     * that prevents a call from finishing.
+     *
+     * The backend counts the whole batch as one scan for the daily quota. An
+     * item it could not scan is reported inside a successful answer, and comes
+     * back as a skipped result. Prefer checkBatchOrHam() unless you want to
+     * handle the exceptions yourself.
+     *
+     * @throws SpamtrollException
+     */
+    public function checkBatch(BatchCheckRequest $request): BatchCheckResponse
+    {
+        [$success, $code, $decoded, $error, $errorCode] = $this->dispatch(
+            'POST',
+            '/scan/batch',
+            $request->toArray(),
+        );
+
+        return new BatchCheckResponse(
+            $success,
+            $code,
+            $decoded,
+            $error,
+            count($request->items),
+            $this->config->scoreDenominator,
+            $errorCode,
+        );
     }
 
     /**
