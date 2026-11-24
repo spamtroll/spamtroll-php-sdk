@@ -29,7 +29,7 @@ the constraint in a plugin.
   four plugins had been re-deriving a verdict from the normalised score
   with their own hard-coded cut-offs because `status` was awkward to
   reach.
-- `CheckSpamResponse::getSkipCategory()` — a **closed** set of seven values
+- `CheckSpamResponse::getSkipCategory()` — a **closed** set of eight values
   (`not_configured`, `auth`, `quota`, `rate_limit`, `rejected`,
   `redirected`, `transport`, `no_verdict`, plus the empty string when there
   is a verdict)
