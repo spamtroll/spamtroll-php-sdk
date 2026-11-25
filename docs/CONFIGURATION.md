@@ -42,6 +42,13 @@ which is worse than blocking the content.
 retry, clamps the sleep to what is left, and clamps each attempt's
 timeout to the remaining budget.
 
+The budget is exact to within one second, not to the millisecond. cURL takes
+the attempt timeout in whole seconds (`HttpClientInterface::send()` has an
+`int $timeout`), so the last attempt rounds up and can end up to one second
+after the budget. With the default budget the worst case is about 7 s, not
+6 s. The [Go SDK](https://github.com/spamtroll/spamtroll-go-sdk) has no such
+rounding.
+
 | Preset | timeout | maxRetries | backoff | budget | Worst case |
 |---|---:|---:|---:|---:|---:|
 | **Interactive (default)** | 3 s | 2 | 250 ms | 6000 ms | **~6.25 s** |
