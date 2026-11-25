@@ -188,12 +188,13 @@ if (!$result->success) {
 backend still answers 200 when it could not persist the submission.
 Store it when it is there, and hide the "report" button when it is not.
 
-Backend limits worth knowing before you wire this to a bulk action:
+Backend limits worth knowing before you wire this to a bulk action. The numbers
+are on the [FAQ](https://spamtroll.io/faq#limits); the daily one depends on your plan:
 
 | Limit | Value | Response |
 |---|---|---|
-| Rate limiter | 20 requests/minute per API key | 429 |
-| Daily quota | 100 corrections per platform per day | 429, `error.code = RATE_LIMITED` |
+| Rate limiter | Per API key, per minute | 429 |
+| Daily quota | Per platform per day; depends on the plan | 429, `error.code = RATE_LIMITED` |
 | Unknown submission, or one owned by another platform | — | **404**, not 403 |
 | `correct_label` other than `spam` / `ham` | — | 422 |
 
