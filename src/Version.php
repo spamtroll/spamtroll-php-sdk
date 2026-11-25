@@ -6,5 +6,5 @@ namespace Spamtroll\Sdk;
 
 final class Version
 {
-    public const VERSION = '0.10.0';
+    public const VERSION = '0.11.0';
 }
