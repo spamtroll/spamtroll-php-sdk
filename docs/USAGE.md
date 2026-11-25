@@ -88,6 +88,8 @@ and reference implementations.
 |---|---|---|
 | `checkSpamOrHam(CheckSpamRequest)` | `CheckSpamResponse` | **The method integrations should call.** Submits content to `/scan/check` and never throws; every failure becomes a skipped, non-blocking response. |
 | `checkSpam(CheckSpamRequest)` | `CheckSpamResponse` | Same call, but throws on anything that prevents a verdict. Wrap it in `try/catch (\Throwable)`. |
+| `checkBatchOrHam(BatchCheckRequest)` | `BatchCheckResponse` | Scans up to 100 items in one call to `/scan/batch`. Never throws; every failure becomes skipped, non-blocking results. |
+| `checkBatch(BatchCheckRequest)` | `BatchCheckResponse` | Same call, but throws on anything that stops the call. |
 | `trySubmitFeedback(FeedbackRequest)` | `Response` | Sends a moderator's correction to `/scan/feedback`. Never throws. |
 | `submitFeedback(FeedbackRequest)` | `Response` | Same call, throwing variant. |
 | `testConnection()` | `Response` | Hits `/scan/status` with a GET. For admin "Test Connection" buttons. Throws — an invalid key must be reported, not swallowed, so wrap it. |
@@ -126,6 +128,42 @@ a 402 response, available through `getQuotaUsage()`.
 `CheckSpamRequest::toArray()` returns the canonical wire format —
 `content`, `source`, plus any non-empty optional fields. Empty optional
 fields are *omitted*, not sent as empty strings.
+
+## Scanning many items at once
+
+Use a batch when you have a pile of content to check, for example old
+comments or a mail import. One batch takes up to 100 items.
+
+```php
+use Spamtroll\Sdk\Request\BatchCheckRequest;
+use Spamtroll\Sdk\Request\CheckSpamRequest;
+
+$batch = new BatchCheckRequest([
+    new CheckSpamRequest('first comment', CheckSpamRequest::SOURCE_COMMENT, '203.0.113.5'),
+    new CheckSpamRequest('second comment', CheckSpamRequest::SOURCE_COMMENT, '203.0.113.6'),
+]);
+
+foreach ($client->checkBatchOrHam($batch)->getResults() as $i => $result) {
+    if ($result->shouldBlock()) {
+        // Item $i was sent as the ($i + 1)th item of the batch.
+    }
+}
+```
+
+`getResults()` always has one `CheckSpamResponse` for each item, in the
+order you sent them. The same fail-open rule applies to each one: if the
+call fails, or the backend could not scan one item, that result has
+`wasSkipped() === true` and `shouldBlock() === false`.
+
+Good to know:
+
+- `new BatchCheckRequest([...])` throws `InvalidArgumentException` for an
+  empty list, more than 100 items, or an item that is not a `CheckSpamRequest`.
+  This is a coding mistake, so it is not swallowed.
+- The backend counts the whole batch as one scan for the daily quota.
+- The backend refuses a batch where content and raw messages together
+  are more than 2 MB. You get a 422 and every result is skipped.
+  Split the batch into smaller ones.
 
 ## Moderator feedback
 
