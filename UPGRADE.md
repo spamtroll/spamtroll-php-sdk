@@ -12,6 +12,12 @@ potentially breaking and read this file before bumping a constraint.
 > 0.9.3, which changed `Client::dispatch()` to stop throwing on HTTP 402
 > and shipped it as a patch. It is withdrawn rather than repeated.
 
+## 0.10.x → 0.11.0
+
+No changes are needed. 0.11.0 only adds `Client::checkBatchOrHam()` and
+`checkBatch()` for `POST /scan/batch`. Nothing was removed or changed in
+the existing API.
+
 ## 0.9.x → 0.10.0
 
 ### 0. Before anything: PHP 8.2

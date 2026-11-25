@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-25
+
+This release adds batch scanning. It does not break compatibility with 0.10.x.
+
 ### Changed
 
 - Docs: `CONFIGURATION.md` says that the total budget is exact to within one
