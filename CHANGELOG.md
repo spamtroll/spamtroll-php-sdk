@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: `CONFIGURATION.md` says that the total budget is exact to within one
   second, because cURL takes whole seconds. `ERROR_HANDLING.md` says that the
   new Go SDK follows the same rules.
+- Docs: `USAGE.md` and the `Client::submitFeedback()` docblock no longer state
+  the feedback limits. They depend on the plan, so both now link to the
+  [FAQ](https://spamtroll.io/faq#limits).
 
 ### Added
 

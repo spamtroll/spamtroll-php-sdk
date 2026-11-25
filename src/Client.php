@@ -183,9 +183,9 @@ final class Client
      *
      * This is the only route by which a wrong verdict is corrected and the
      * model retrained; `CheckSpamResponse::getSubmissionId()` supplies the
-     * identifier. Note the limits the backend applies: 20 requests per
-     * minute per API key, and 100 corrections per platform per day, both
-     * answered with 429.
+     * identifier. Note the limits the backend applies: requests per minute
+     * per API key, and corrections per platform per day (the daily limit
+     * depends on the plan; see https://spamtroll.io/faq#limits), both answered with 429.
      * A submission belonging to another platform comes back as 404, not 403.
      *
      * @throws SpamtrollException
