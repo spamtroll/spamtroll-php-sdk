@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: `CONFIGURATION.md` says that the total budget is exact to within one
+  second, because cURL takes whole seconds. `ERROR_HANDLING.md` says that the
+  new Go SDK follows the same rules.
+
 ### Added
 
 - `Client::checkBatchOrHam()` and `checkBatch()` for `POST /scan/batch`,

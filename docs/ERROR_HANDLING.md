@@ -67,6 +67,12 @@ has to pass to exist.
 | `no_verdict` | `SKIP_CATEGORY_NO_VERDICT` | HTTP 2xx with no classification in the body | Fail open and log; suspect a proxy or captive portal |
 | — | `SKIP_CATEGORY_NONE` (`''`) | A verdict was reached | Act on `shouldBlock()` / `shouldModerate()` |
 
+The [Go SDK](https://github.com/spamtroll/spamtroll-go-sdk) uses the same
+categories and the same rules: `checkSpam()` and `checkBatch()` (Go: `Check`
+and `CheckBatch`) return a skipped result for 402, 403, 429, other 4xx, 3xx and
+a body without a verdict, and fail with an exception (Go: an error) only for a
+missing key, 401, 5xx, network errors and invalid requests.
+
 Note what is deliberately **not** grouped together:
 
 - **`not_configured` is not `transport`.** A fresh install with no key is
